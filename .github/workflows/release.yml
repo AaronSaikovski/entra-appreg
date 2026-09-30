@@ -1,0 +1,145 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Validate tag against package version
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          tag = os.environ['RELEASE_TAG']
+          if tag.removeprefix('v') != version:
+              raise SystemExit(f'Tag {tag!r} must equal {version!r} or v{version}. Update version files before tagging.')
+          PY
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Check formatting and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --target "$TARGET" --all-targets -- -D warnings
+      - name: Run unit tests and build release binary
+        run: |
+          cargo test --locked --target "$TARGET"
+          cargo build --locked --release --target "$TARGET"
+      - name: Smoke release binary
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          suffix = '.exe' if os.name == 'nt' else ''
+          binary = Path('target', os.environ['TARGET'], 'release', 'entra-appreg' + suffix).resolve()
+          actual = subprocess.check_output([str(binary), '--version'], text=True).strip()
+          if actual != f'entra-appreg {version}':
+              raise SystemExit(f'Binary version mismatch: {actual!r}')
+          for args in [[], ['create'], ['expose-api'], ['list']]:
+              subprocess.run([str(binary), *args, '--help'], check=True)
+          PY
+      - name: Package binary and checksum
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+          target = os.environ['TARGET']
+          tag = os.environ['RELEASE_TAG']
+          windows = target.endswith('windows-msvc')
+          binary = Path('target', target, 'release', 'entra-appreg' + ('.exe' if windows else ''))
+          files = [binary, Path('LICENSE'), Path('README.md')]
+          dist = Path('dist')
+          dist.mkdir(exist_ok=True)
+          archive = dist / f'entra-appreg-{tag}-{target}{".zip" if windows else ".tar.gz"}'
+          if windows:
+              with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as package:
+                  for path in files:
+                      package.write(path, arcname=path.name)
+          else:
+              with tarfile.open(archive, 'w:gz') as package:
+                  for path in files:
+                      package.add(path, arcname=path.name)
+          with archive.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          archive.with_name(archive.name + '.sha256').write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: dist
+      - name: Create release with all platform assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "$RELEASE_TAG" "${flags[@]}"

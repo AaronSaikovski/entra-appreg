@@ -6,6 +6,9 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Fixed
 
+- Rust: detect repeated Graph pagination links instead of looping on empty cyclic pages; retain the next-link origin restriction and reject redirects.
+- Rust: cap secret descriptions at 128 UTF-16 units without splitting a Unicode scalar. The additive port leaves C# unchanged.
+- Rust parity: require explicit HTTP(S) redirect authority instead of accepting WHATWG-repaired inputs such as `http:example.com`; verified C# rejection and retained a shared regression.
 - Reject missing option values instead of consuming a following long option; reject empty redirect options on `list` and `expose-api` before authentication.
 - Reject explicitly empty or whitespace-only `--appid` values before authentication, preventing an empty variable from silently opting into creation.
 - Reject scope names beginning with `.` before Graph writes, matching Graph's scope-name restriction.
@@ -19,12 +22,31 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Changed
 
+- Refresh `.gitignore` for the root Rust project: retain target/dist, secret reports, IntelliJ state, and macOS metadata; ignore Rust formatter backups and profiling data; remove obsolete .NET, Visual Studio, and Python-test cache patterns. All 17 `git check-ignore --no-index` cases passed, including trackable Cargo.lock, source, shared Cargo configuration, and workflows.
+- Derive CLI `--version` and the general help heading from Cargo.toml's package version via compile-time `CARGO_PKG_VERSION`, removing duplicated source version strings. The standalone executable does not read or require a manifest at runtime.
+- Version verification: synchronized the stale lockfile package entry to the manifest's 1.0.0 using offline Cargo resolution. Formatting, strict Clippy, compilation, debug/release builds, and all 43 tests passed. A copied release executable printed the manifest version in both `--version` and help from a temporary directory with no Cargo.toml and an empty PATH.
+- Move the Cargo package to the repository root (`Cargo.toml`, `Cargo.lock`, `src/`). Update CI/release manifest, build, binary-smoke, and packaging paths; simplify CLI help and development commands to root-level Cargo invocations; ignore `/target/` instead of `/rust/target/`. README and AGENTS.md now describe the flattened layout.
+- Make Rust the sole supported implementation after removal of the .NET source and shared Python process suite. Rewrite README and root AGENTS.md for current Rust usage, architecture, conventions, tooling, tests, CI, and releases; synthesize four parallel research slices covering source, tests, build configuration, and documentation.
+- Remove dangling Python unittest invocations from CI/release workflows. Retain formatting, strict Clippy, compilation/build gates, Rust tests, binary smoke, and release packaging/version checks. Historical C# and Python verification below describes removed implementations/coverage, not the current repository.
+- Ignore root release packaging output in `/dist/` and anchor the Rust build-output rule to `/rust/target/`. Verified with `git check-ignore --no-index` that archives, checksums, build output, and reports are ignored while Cargo.lock, workflow files, and Rust source remain trackable.
+- Switch Rust authentication to the official `azure_identity::AzureCliCredential`, matching C#'s use of the current `az login` session. Azure CLI is again a runtime dependency; this supersedes the earlier shell-free/client-secret design. No environment-credential fallback remains.
+- Restore create-only tenant discovery and tenant-pinned token acquisition; list/expose use the active CLI context. Keep tokens opaque, bound authentication, and replace SDK errors with safe diagnostics rather than expose raw credential output.
+- Retain `reqwest` for Graph HTTP with fixed Graph endpoint and disabled redirects/retries. Update help, README, repository instructions, and offline fixtures for Azure CLI authentication.
+- Expand README's quick start with explicit Rust and C# commands, both version invocations, existing `az login` reuse, tenant inspection, and a warning that running both creation examples creates two registrations. No runtime behavior changed. Rechecked the documented locked Rust build and both implementations' help/version commands successfully; no live Azure operations were run.
+- Require passing rustfmt, strict all-target Clippy, the locked build, Rust tests, and shared process checks in `AGENTS.md`; document the exact commands in README. Move CLI tests after production items and name the HTTP fixture response type. Keep the one-shot parsed invocation stack-allocated with a narrowly justified `large_enum_variant` expectation rather than adding a heap allocation.
+- Replace Rust's manual option loop with Clap 4's derive parser (`clap` 4.6.7 pinned in `Cargo.lock`). Retain the C# command/help/version pre-pass, space-separated-only syntax, repeated scalar/flag/redirect behavior, single-hyphen values, detailed help, and deferred semantic validation. C# remains unchanged.
 - Use ordinal hash-set lookup for redirect deduplication instead of repeated linear scans.
 - Retain only displayed fields while collecting Graph list results; avoid cloning response trees and creating an additional sorted list.
 - Reuse the scope collection already cloned with API settings instead of cloning every existing scope twice.
 
 ### Added
 
+- Add read-only Rust CI on branch pushes, pull requests, and manual dispatch for Linux/macOS/Windows: rustfmt, strict Clippy, cargo check, locked build, unit tests, and real-process smoke/regressions. Actionlint and all commands passed locally on macOS, including 43 Rust tests and 21 CLI tests. Hosted execution and branch-protection configuration remain unverified; release publishing stays separate.
+
+- Tag-triggered GitHub Actions release workflow for Rust binaries on Linux x64/ARM64, macOS Intel/Apple Silicon, and Windows x64. Native jobs gate publication on formatting, strict Clippy, unit/process tests, version/help smoke, and locked release builds. Publish archives with README/license and SHA-256 checksums using a least-privilege release job and commit-pinned actions. Require tags to match the package and binary version; mark prerelease versions accordingly.
+
+- A complete Rust CLI alongside the retained C# implementation, under `rust/`, with a pinned Cargo lockfile and the same create/expose/list option, output, exit-code, and recovery contracts.
+- Shared Python CLI checks selectable with `ENTRA_APPREG_BINARY`, plus Rust helper and isolated HTTP/subprocess tests.
 - Offline CLI regression checks in `tests/test_cli.py`, using standard-library Python `unittest`, a controlled Azure CLI fixture, and a loopback-only proxy to prevent Graph traffic.
 - Repository guidelines in `AGENTS.md` and `.gitignore` rules for secret-bearing reports, build output, IDE state, and test caches.
 - Step-by-step README instructions for installation checks, tenant sign-in, read-only listing, creation, and local verification.
@@ -32,10 +54,24 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Verification
 
+- Root Cargo layout verification: root-level formatting, strict Clippy, compilation checking, debug/ARM64 release builds, all 43 Rust tests, and actionlint passed. Executed both migrated workflow smoke scripts and the root-manifest tag guard. Tested migrated packaging paths, archive contents/checksums, Unix executable permissions, and extracted binary version; ZIP used a fixture, not Windows execution. Confirmed root target output is ignored and lock/source/workflows remain trackable. No active old package paths remain in source, workflows, README, AGENTS.md, or ignore rules. Hosted publication/platform and live-tenant limits are unchanged.
+- Rust-only documentation/workflow verification: four parallel read-only research agents supplied source, tests, configuration, and documentation findings. Confirmed root AGENTS.md has the requested title/eight sections and current guidance/workflows contain no removed implementation/test commands. On macOS, actionlint for both workflows, rustfmt, strict Clippy, cargo check, debug and ARM64 release builds, and all 43 Rust tests passed. Executed both workflows' actual binary-smoke scripts; invalid top and blank app ID returned exit 2. Hosted matrix/publication and live Graph behavior remain unverified. Subsequent bullets retain historical verification, including the now-removed Python suite.
+
+- Release workflow verification: actionlint 1.7.12 passed; macOS ARM64 locked release build, rustfmt, strict Clippy, 43 Rust tests, and 21 release-binary process checks passed. Executed the workflow's version guard, smoke, and archive steps locally; verified mismatched-tag rejection, archive contents/checksums, preserved Unix executable permissions, and extracted binary version. ZIP smoke used a fixture, not a Windows build. No tag was pushed or GitHub release created; hosted matrix and publication remain unverified.
+- Current Azure CLI credential cutover: locked build, all 43 Rust unit/workflow tests, and all 21 process tests against each implementation passed with no skips. Formatting and strict all-target Clippy passed. Integration caught and corrected the SDK executor import to its public root re-export.
+- Actual Rust binary smoke with fake `az` verified successful SDK token acquisition for Graph `.default`, normalized create tenant pinning, subsequent local validation, authentication-free version, and empty JSON stdout on login failure. No live Azure operation was performed.
+- Rust requires Azure CLI 2.54.0+ for the SDK's numeric `expires_on` field. Authentication has a ten-second deadline and kills the directly spawned process on cancellation; termination of all shell descendants is not guaranteed. Windows/Linux and live-tenant verification remain outstanding.
+- Historical, superseded client-secret implementation: 42 Rust unit/workflow tests and 21 Rust process tests passed; C# passed 17 applicable checks with four skips. Its one-off native SDK/reqwest loopback smoke also passed. Those results do not verify the current Azure CLI credential implementation.
+- Final Rust formatting and lint gates passed: `cargo fmt --manifest-path rust/Cargo.toml --check` and `cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings`.
 - Local CLI regressions and isolated Graph-response replays passed on macOS with .NET SDK 10.0.401.
-- Seven CLI test methods pass; one-off report-helper checks also cover 16 simultaneous writers, occupied paths, existing-secret preservation, Unix permissions, and genuine open-error propagation.
+- Before native authentication, the Clap migration passed 17 shared methods against both C# and Rust on macOS. The initial source contained seven baseline methods (not the eight recorded during planning); their non-authentication behavior remains covered.
 - Follow-up scope checks confirmed leading-dot rejection while preserving internal dots, underscores, hyphens, and the 120-character boundary; the real CLI rejected an empty `--appid` with exit 2 before authentication.
-- Windows execution and live-tenant operations remain unverified; use the README smoke checklist in a test tenant.
+- Before the temporary client-secret cutover, Rust 1.98.1 passed the locked build and 45 tests, including handwritten subprocess authentication checks. Current token acquisition is owned by the official Azure CLI credential SDK.
+- Actual Rust process smoke passed version, general/create/expose/list help, invalid top/blank app ID, and JSON authentication failure with no stdout pollution.
+- Clap migration smoke exercised the real binary's version, all four help topics, version-over-help precedence, missing/inline values, repeated JSON flags, and single-hyphen values under fake Azure CLI. Exit codes, authentication bypass, and clean JSON stdout were preserved; no live Graph operation was run.
+- Historical initial-port evidence: a temporary `offline_smoke` Cargo example passed 30 loopback/fake-Azure scenarios covering Graph workflows and report recovery. The example was removed; these results predate the native authentication cutover.
+- Independent read-only parity and security/reliability reviews of the initial Rust port found no remaining actionable defects. The later Clap migration was checked with the expanded unit/process suites and direct CLI smoke. Source-derived C# pagination-cycle and surrogate-truncation findings remain in C# by the approved coexistence decision; the Rust fixes are verified offline.
+- Live-tenant operations and Windows/Linux execution remain unverified; macOS tests do not establish Windows ACL or live Graph behavior. No live authentication-state changes or tenant mutations were performed.
 
 ## 1.0.0
 
