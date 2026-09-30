@@ -281,7 +281,7 @@ const GENERAL_HELP: &str = r#"entra-appreg 1.0.0 - manage Microsoft Entra ID app
 
 USAGE
   entra-appreg [command] [options]
-  cargo run --manifest-path rust/Cargo.toml -- [command] [options]
+  cargo run -- [command] [options]
 
 COMMANDS
   create           (default) Create an app registration. The word can be omitted.
@@ -302,9 +302,9 @@ OPTIONS BY COMMAND
 
 HELP
   -h, --help       Show help. Add it after a command to see that command's options:
-                     cargo run --manifest-path rust/Cargo.toml -- create --help
-                     cargo run --manifest-path rust/Cargo.toml -- expose-api --help
-                     cargo run --manifest-path rust/Cargo.toml -- list --help
+                     cargo run -- create --help
+                     cargo run -- expose-api --help
+                     cargo run -- list --help
   --version        Show the version and exit.
 
 AUTHENTICATION
@@ -321,14 +321,14 @@ NOTE
   Examples assume the repository root as the current directory.
 
 EXAMPLES
-  cargo run --manifest-path rust/Cargo.toml -- --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
-  cargo run --manifest-path rust/Cargo.toml -- expose-api --appid <id> --scope-name access_as_user
-  cargo run --manifest-path rust/Cargo.toml -- list --name "My SPA""#;
+  cargo run -- --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
+  cargo run -- expose-api --appid <id> --scope-name access_as_user
+  cargo run -- list --name "My SPA""#;
 
 const CREATE_HELP: &str = r#"create - create a new app registration (the default command)
 
 USAGE
-  cargo run --manifest-path rust/Cargo.toml -- [create] --name <text> --redirect-urls <list> [options]
+  cargo run -- [create] --name <text> --redirect-urls <list> [options]
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
@@ -401,15 +401,15 @@ OUTPUT
   AUTH_APP_ID and AUTH_CLIENT_ID. Exit codes: 0 success, 1 failure, 2 bad arguments.
 
 EXAMPLES
-  cargo run --manifest-path rust/Cargo.toml -- --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
-  cargo run --manifest-path rust/Cargo.toml -- --name "My SPA" --scope-name access_as_user --redirect-urls http://localhost:5173/auth/callback
-  cargo run --manifest-path rust/Cargo.toml -- --name "My SPA" --create-secret --secret-expiry 365 --redirect-urls http://localhost:5173/auth/callback
-  cargo run --manifest-path rust/Cargo.toml -- --name "My SPA" --create-secret --secret-expiry custom --secret-end 30/06/2027 --redirect-urls http://localhost:5173/auth/callback"#;
+  cargo run -- --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
+  cargo run -- --name "My SPA" --scope-name access_as_user --redirect-urls http://localhost:5173/auth/callback
+  cargo run -- --name "My SPA" --create-secret --secret-expiry 365 --redirect-urls http://localhost:5173/auth/callback
+  cargo run -- --name "My SPA" --create-secret --secret-expiry custom --secret-end 30/06/2027 --redirect-urls http://localhost:5173/auth/callback"#;
 
 const EXPOSE_HELP: &str = r#"expose-api - add an API scope to an existing app
 
 USAGE
-  cargo run --manifest-path rust/Cargo.toml -- expose-api --appid <id> --scope-name <value> [options]
+  cargo run -- expose-api --appid <id> --scope-name <value> [options]
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
@@ -460,13 +460,13 @@ BEHAVIOUR
   exists), 2 bad arguments.
 
 EXAMPLES
-  cargo run --manifest-path rust/Cargo.toml -- expose-api --appid 00000000-0000-0000-0000-000000000000 --scope-name access_as_user
-  cargo run --manifest-path rust/Cargo.toml -- expose-api --appid <id> --scope-name access_as_user --scope-display-name "Access My SPA API""#;
+  cargo run -- expose-api --appid 00000000-0000-0000-0000-000000000000 --scope-name access_as_user
+  cargo run -- expose-api --appid <id> --scope-name access_as_user --scope-display-name "Access My SPA API""#;
 
 const LIST_HELP: &str = r#"list - list the app registrations in the tenant (read-only)
 
 USAGE
-  cargo run --manifest-path rust/Cargo.toml -- list [options]
+  cargo run -- list [options]
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
@@ -504,10 +504,10 @@ BEHAVIOUR
     the active Azure CLI tenant.
 
 EXAMPLES
-  cargo run --manifest-path rust/Cargo.toml -- list
-  cargo run --manifest-path rust/Cargo.toml -- list --name "My SPA"
-  cargo run --manifest-path rust/Cargo.toml -- list --top all
-  cargo run --manifest-path rust/Cargo.toml -- list --json"#;
+  cargo run -- list
+  cargo run -- list --name "My SPA"
+  cargo run -- list --top all
+  cargo run -- list --json"#;
 
 #[cfg(test)]
 mod tests {

@@ -22,6 +22,10 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Changed
 
+- Move the Cargo package to the repository root (`Cargo.toml`, `Cargo.lock`, `src/`). Update CI/release manifest, build, binary-smoke, and packaging paths; simplify CLI help and development commands to root-level Cargo invocations; ignore `/target/` instead of `/rust/target/`. README and AGENTS.md now describe the flattened layout.
+- Make Rust the sole supported implementation after removal of the .NET source and shared Python process suite. Rewrite README and root AGENTS.md for current Rust usage, architecture, conventions, tooling, tests, CI, and releases; synthesize four parallel research slices covering source, tests, build configuration, and documentation.
+- Remove dangling Python unittest invocations from CI/release workflows. Retain formatting, strict Clippy, compilation/build gates, Rust tests, binary smoke, and release packaging/version checks. Historical C# and Python verification below describes removed implementations/coverage, not the current repository.
+- Ignore root release packaging output in `/dist/` and anchor the Rust build-output rule to `/rust/target/`. Verified with `git check-ignore --no-index` that archives, checksums, build output, and reports are ignored while Cargo.lock, workflow files, and Rust source remain trackable.
 - Switch Rust authentication to the official `azure_identity::AzureCliCredential`, matching C#'s use of the current `az login` session. Azure CLI is again a runtime dependency; this supersedes the earlier shell-free/client-secret design. No environment-credential fallback remains.
 - Restore create-only tenant discovery and tenant-pinned token acquisition; list/expose use the active CLI context. Keep tokens opaque, bound authentication, and replace SDK errors with safe diagnostics rather than expose raw credential output.
 - Retain `reqwest` for Graph HTTP with fixed Graph endpoint and disabled redirects/retries. Update help, README, repository instructions, and offline fixtures for Azure CLI authentication.
@@ -34,6 +38,10 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- Add read-only Rust CI on branch pushes, pull requests, and manual dispatch for Linux/macOS/Windows: rustfmt, strict Clippy, cargo check, locked build, unit tests, and real-process smoke/regressions. Actionlint and all commands passed locally on macOS, including 43 Rust tests and 21 CLI tests. Hosted execution and branch-protection configuration remain unverified; release publishing stays separate.
+
+- Tag-triggered GitHub Actions release workflow for Rust binaries on Linux x64/ARM64, macOS Intel/Apple Silicon, and Windows x64. Native jobs gate publication on formatting, strict Clippy, unit/process tests, version/help smoke, and locked release builds. Publish archives with README/license and SHA-256 checksums using a least-privilege release job and commit-pinned actions. Require tags to match the package and binary version; mark prerelease versions accordingly.
+
 - A complete Rust CLI alongside the retained C# implementation, under `rust/`, with a pinned Cargo lockfile and the same create/expose/list option, output, exit-code, and recovery contracts.
 - Shared Python CLI checks selectable with `ENTRA_APPREG_BINARY`, plus Rust helper and isolated HTTP/subprocess tests.
 - Offline CLI regression checks in `tests/test_cli.py`, using standard-library Python `unittest`, a controlled Azure CLI fixture, and a loopback-only proxy to prevent Graph traffic.
@@ -43,6 +51,10 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Verification
 
+- Root Cargo layout verification: root-level formatting, strict Clippy, compilation checking, debug/ARM64 release builds, all 43 Rust tests, and actionlint passed. Executed both migrated workflow smoke scripts and the root-manifest tag guard. Tested migrated packaging paths, archive contents/checksums, Unix executable permissions, and extracted binary version; ZIP used a fixture, not Windows execution. Confirmed root target output is ignored and lock/source/workflows remain trackable. No active old package paths remain in source, workflows, README, AGENTS.md, or ignore rules. Hosted publication/platform and live-tenant limits are unchanged.
+- Rust-only documentation/workflow verification: four parallel read-only research agents supplied source, tests, configuration, and documentation findings. Confirmed root AGENTS.md has the requested title/eight sections and current guidance/workflows contain no removed implementation/test commands. On macOS, actionlint for both workflows, rustfmt, strict Clippy, cargo check, debug and ARM64 release builds, and all 43 Rust tests passed. Executed both workflows' actual binary-smoke scripts; invalid top and blank app ID returned exit 2. Hosted matrix/publication and live Graph behavior remain unverified. Subsequent bullets retain historical verification, including the now-removed Python suite.
+
+- Release workflow verification: actionlint 1.7.12 passed; macOS ARM64 locked release build, rustfmt, strict Clippy, 43 Rust tests, and 21 release-binary process checks passed. Executed the workflow's version guard, smoke, and archive steps locally; verified mismatched-tag rejection, archive contents/checksums, preserved Unix executable permissions, and extracted binary version. ZIP smoke used a fixture, not a Windows build. No tag was pushed or GitHub release created; hosted matrix and publication remain unverified.
 - Current Azure CLI credential cutover: locked build, all 43 Rust unit/workflow tests, and all 21 process tests against each implementation passed with no skips. Formatting and strict all-target Clippy passed. Integration caught and corrected the SDK executor import to its public root re-export.
 - Actual Rust binary smoke with fake `az` verified successful SDK token acquisition for Graph `.default`, normalized create tenant pinning, subsequent local validation, authentication-free version, and empty JSON stdout on login failure. No live Azure operation was performed.
 - Rust requires Azure CLI 2.54.0+ for the SDK's numeric `expires_on` field. Authentication has a ten-second deadline and kills the directly spawned process on cancellation; termination of all shell descendants is not guaranteed. Windows/Linux and live-tenant verification remain outstanding.
