@@ -277,7 +277,10 @@ pub(crate) fn show_help(topic: HelpTopic) {
     );
 }
 
-const GENERAL_HELP: &str = r#"entra-appreg 1.0.0 - manage Microsoft Entra ID app registrations for single-page apps
+const GENERAL_HELP: &str = concat!(
+    "entra-appreg ",
+    env!("CARGO_PKG_VERSION"),
+    r#" - manage Microsoft Entra ID app registrations for single-page apps
 
 USAGE
   entra-appreg [command] [options]
@@ -323,7 +326,8 @@ NOTE
 EXAMPLES
   cargo run -- --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
   cargo run -- expose-api --appid <id> --scope-name access_as_user
-  cargo run -- list --name "My SPA""#;
+  cargo run -- list --name "My SPA""#
+);
 
 const CREATE_HELP: &str = r#"create - create a new app registration (the default command)
 

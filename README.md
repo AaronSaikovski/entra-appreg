@@ -207,6 +207,8 @@ cargo run --locked -- list --top 0
 
 Fix formatting with `cargo fmt`. Preserve `Cargo.lock`; build output `/target/` and release artifacts `/dist/` are ignored. Tests live beside private helpers with `#[test]`/`#[tokio::test]`, injected SDK executors, loopback HTTP, and temporary files. They cover parser semantics, tenant selection, safe failures, date/scope/Unicode boundaries, lookup/pagination safety, API preservation, and report collisions/permissions. They do not use a live login. There is no separate Python test suite or coverage threshold.
 
+Rust formatter backups (`*.rs.bk`) and profiling data (`*.profraw`, `*.profdata`) are also ignored. Keep `Cargo.lock`, source, workflows, and shared `.cargo/config.toml` tracked. The ignore rules no longer carry exclusions for the removed .NET/Python test tooling; 17 ignore-rule checks verified generated/secret artifacts versus trackable project files.
+
 ### CI and releases
 
 [CI](.github/workflows/ci.yml) runs on branch pushes, pull requests, and manual dispatch across Linux, macOS, and Windows. It checks formatting, strict Clippy, compilation, build, Rust tests, and real-binary smoke. Builds use read-only repository permissions and cancel superseded CI runs. Configure branch protection separately to require all three `Rust checks (...)` statuses.
@@ -227,7 +229,7 @@ Python 3.12 is used only by workflow helper scripts for smoke, version validatio
 
 #### Making a release
 
-1. Synchronize root `Cargo.toml`, generated `Cargo.lock`, version output in `src/main.rs`, help version in `src/cli.rs`, this README, changelog, and any affected tests.
+1. Update `[package].version` in root `Cargo.toml`, regenerate `Cargo.lock`, and update this README, changelog, and any affected tests. The CLI's `--version` output and general help heading use Cargo's compile-time `CARGO_PKG_VERSION`; rebuilding picks up the manifest version without editing source strings or shipping Cargo.toml with the binary.
 2. Run the quality gates and smoke commands. Commit the changes before tagging.
 3. Push a matching tag (replace the example version as needed):
 

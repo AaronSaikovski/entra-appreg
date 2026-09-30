@@ -16,7 +16,7 @@ async fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Invocation::Version) => {
-            println!("entra-appreg 1.0.0");
+            println!("entra-appreg {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
         Ok(Invocation::NoArguments) => {

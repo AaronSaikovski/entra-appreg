@@ -54,7 +54,7 @@ Fix formatting with `cargo fmt`; fix Clippy findings rather than weaken `-D warn
 - Use sequential `await`, `serde_json` payloads, `AppError::Usage` versus runtime `anyhow` errors. Exit codes: 0 success/help/version, 1 operational failure, 2 invalid input/no arguments. Errors go to stderr; preserve Graph error bodies, but never expose raw token/credential output in authentication diagnostics.
 - Preserve exact redirect URI spelling while deduplicating exact strings. Scope rules, UTC lifetime validation, Unicode-safe secret-description truncation, and validation ordering are observable behavior.
 - Private executor/client construction seams and explicit clocks support deterministic tests; do not turn them into production endpoint overrides or a second dependency-injection framework. Use `parking_lot` for test locks where poisoning is not handled.
-- New options require parsing, validation, help, README reference, and supplied-option group updates. Release versions must agree across Cargo.toml/Cargo.lock, CLI version/help output, README, changelog, and affected tests.
+- New options require parsing, validation, help, README reference, and supplied-option group updates. Cargo.toml's package version is authoritative: version/help use compile-time `CARGO_PKG_VERSION`, not hardcoded strings. For releases, update Cargo.toml/Cargo.lock, README, changelog, and affected tests, then rebuild.
 - After every review/change, update README and CHANGELOG with behavior, actual verification, review outcomes, and remaining limits. Keep unreleased work under the current version until an intentional release.
 
 ## Important Files
