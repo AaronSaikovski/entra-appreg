@@ -1,0 +1,20 @@
+# Registration reports can contain live plaintext client secrets.
+# Reports are written to the invocation directory with arbitrary app names.
+*.txt
+
+# .NET build output
+[Bb]in/
+[Oo]bj/
+
+# Python regression-test cache
+__pycache__/
+*.pyc
+
+# Local IDE state
+.vs/
+.idea/
+*.user
+*.suo
+
+# macOS metadata
+.DS_Store
