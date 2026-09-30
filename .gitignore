@@ -6,6 +6,9 @@
 [Bb]in/
 [Oo]bj/
 
+# Rust build output
+rust/target/
+
 # Python regression-test cache
 __pycache__/
 *.pyc

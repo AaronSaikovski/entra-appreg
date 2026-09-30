@@ -1,19 +1,63 @@
 # entra-appreg
 
-Create, expose an API on, and list Microsoft Entra ID **app registrations** for single-page applications, from one .NET file (`src/entra-appreg.cs`).
+Create, expose an API on, and list Microsoft Entra ID **app registrations** for single-page applications. Choose the original .NET file (`src/entra-appreg.cs`) or the Rust binary (`rust/`); both implement `create`, `expose-api`, and `list`.
 
-**Version 1.0.0** · show it with `dotnet run src/entra-appreg.cs -- --version` · see [CHANGELOG.md](CHANGELOG.md) for release history and unreleased fixes
+**Version 1.0.0** · Rust: `rust/target/debug/entra-appreg --version` · C#: `dotnet run src/entra-appreg.cs -- --version` · [Release history](CHANGELOG.md)
 
-A single-file .NET script for Microsoft Entra ID (Azure AD) **app registrations** for a single-page application (SPA). It has three commands:
+Both implementations use your current Azure CLI login through `AzureCliCredential`. Both offer three commands:
 
 - **`create`** (the default) makes a new app registration, optionally exposes an API and adds a **client secret**, and saves the resulting IDs to a text file.
 - **`expose-api`** adds an API scope to an app that **already exists**.
 - **`list`** queries the tenant for app registrations, so you can find the ID to use with `--appid`.
 
-It is a .NET [file-based app](https://learn.microsoft.com/en-us/dotnet/core/sdk/file-based-apps): there is no `.csproj`, you just run the `.cs` file. It replaces the original `auth_init.py` script, and was called `auth_init.cs` during development.
+The C# implementation is a .NET [file-based app](https://learn.microsoft.com/en-us/dotnet/core/sdk/file-based-apps): there is no `.csproj`, you just run the `.cs` file. It replaces the original `auth_init.py` script, and was called `auth_init.cs` during development.
+
+### Rust alternative
+
+The C# invocation remains supported and unchanged. To build the Rust edition 2024 package with a current stable Rust toolchain:
+
+```sh
+cargo build --manifest-path rust/Cargo.toml --locked
+rust/target/debug/entra-appreg --version
+rust/target/debug/entra-appreg --help
+# Or build and run through Cargo:
+cargo run --manifest-path rust/Cargo.toml --locked -- list --help
+```
+
+On Windows use `rust/target/debug/entra-appreg.exe`. `rust/Cargo.lock` pins dependencies; the first build needs access to crates.io. The built binary does not require .NET or Python. All option tables and command examples below apply to both implementations: replace `dotnet run src/entra-appreg.cs --` with the Rust binary path, or `cargo run --manifest-path rust/Cargo.toml --locked --`. Reports are written in the invocation directory.
+
+Rust uses the official [`azure_identity::AzureCliCredential`](https://docs.rs/azure_identity/latest/azure_identity/struct.AzureCliCredential.html) to acquire a Microsoft Graph token from your existing `az login` session. The SDK invokes `az` internally; the Rust binary therefore requires Azure CLI at runtime. Graph calls use `reqwest`, with redirects and retries disabled. Tokens remain opaque and are not written to reports.
+
+#### Rust authentication setup
+
+Install Azure CLI **2.54.0 or later** and ensure `az` is on `PATH`. The Rust SDK requires the CLI's numeric `expires_on` token field.
+
+**Already signed in with `az login`?** No additional tool-specific login or token export is needed. Check the selected identity and tenant, then make a read-only request:
+
+```sh
+az account show --query "{tenantId:tenantId,user:user.name}" --output json
+rust/target/debug/entra-appreg list --top 1 --json
+```
+
+If you are not signed in, or need a different tenant, replace `YOUR_TENANT_ID` and sign in deliberately before running the tool:
+
+```sh
+az login --tenant "YOUR_TENANT_ID"
+```
+
+For a directory without an Azure subscription, add `--allow-no-subscriptions`. The tool asks Azure CLI for a Graph access token; it does not read the CLI's private token cache or run `az login` for you.
+
+Like C#, Rust creation reads the tenant from `az account show`, validates it, and pins token acquisition to that tenant. List and expose-api use the active Azure CLI context. The selected identity must have permission for the requested Graph operations; obtaining a token does not grant authorization.
+
+No separate authentication app or `AZURE_CLIENT_SECRET` is required. Rust does not select environment-based service-principal credentials or fall back to another credential type. `--create-secret` remains an optional operation on the **target registration**, not a credential for logging in. Help/version bypass authentication.
+
+Rust bounds the complete tenant/token operation to ten seconds and kills the directly spawned process on cancellation. The SDK launches platform shell commands internally; termination of every descendant process is not guaranteed. Graph requests retain their separate ten-second timeout.
+
+The Rust port additionally rejects repeated pagination links and truncates secret descriptions without splitting Unicode scalars within the 128-UTF-16-unit limit. C# is unchanged and retains these two reviewed edge cases. Help whitespace, timestamp fractional precision, Unicode sort ties, and report BOM bytes are not byte-compatibility promises: Rust reports are UTF-8 without BOM, with platform line endings.
 
 ## Contents
 
+- [Rust build and usage](#rust-alternative) · [Reuse your Azure CLI login](#rust-authentication-setup)
 - [What `create` does](#what-create-does) · [Requirements](#requirements) · [Quick start](#quick-start)
 - [Commands](#commands): [`expose-api`](#expose-api), [`list`](#list)
 - [Getting help](#getting-help) · [Options](#options) · [Examples](#examples)
@@ -24,7 +68,7 @@ It is a .NET [file-based app](https://learn.microsoft.com/en-us/dotnet/core/sdk/
 
 ## What `create` does
 
-1. Signs in with the standard Azure login: the account you signed in with using `az login` (no app IDs or secrets needed).
+1. Acquires a Graph token using the current Azure CLI login.
 2. If you pass `--appid` (an object ID or a client ID) and that app exists, stops there (nothing is created).
 3. Otherwise creates an app registration with:
    - **Platform:** Single-page application (SPA)
@@ -38,17 +82,30 @@ It is a .NET [file-based app](https://learn.microsoft.com/en-us/dotnet/core/sdk/
 
 | Requirement | Notes |
 |---|---|
-| [.NET 10 SDK](https://dotnet.microsoft.com/download) or later | File-based apps are not available earlier. Check with `dotnet --version`. |
-| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az`) | Required for Graph operations, not help/version. Sign in to the intended tenant; the script reuses that login through `AzureCliCredential`. |
-| Tenant permissions | Create requires permission to register apps, such as the *Application Developer* role or the tenant's user-registration setting. `list` requires read access; `expose-api` requires permission to update the target registration. |
+| [.NET 10 SDK](https://dotnet.microsoft.com/download) or later (C# only) | File-based apps are not available earlier. Check with `dotnet --version`. |
+| Current stable [Rust toolchain](https://rustup.rs/) (Rust build only) | Edition 2024; `cargo build --manifest-path rust/Cargo.toml --locked`. |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az`) | Required by both implementations for Graph operations, not help/version. Rust requires 2.54.0+; sign in first with `az login`. |
+| Tenant permissions | The identity selected by Azure CLI must be authorized to read or manage the target app registrations. |
 
-**For local tests only:** Python 3.9+ and the .NET 10 SDK. Python is not needed to run the application, and the regression suite does not require a real Azure login.
+**For local process tests only:** Python 3.9+ and either the .NET 10 SDK or the built Rust binary. Python is not needed to run either application; the regression suite does not require a real Azure login.
 
 ## Quick start
 
-Run these commands from the **repository root**, the folder containing `README.md` and `src/`. Install the .NET 10 **SDK** (not just the runtime) and Azure CLI using the links above; both must be on `PATH`.
+Run from the **repository root** and choose either implementation below. Both use the same Azure CLI login and accept the same application arguments. C# needs the .NET 10 **SDK** (not just the runtime); Rust needs a Rust toolchain to build. Azure CLI must be on `PATH` for either implementation's authenticated commands.
 
 ### 1. Check the installation without signing in
+
+**Rust:**
+
+```sh
+cargo build --manifest-path rust/Cargo.toml --locked
+rust/target/debug/entra-appreg --version
+rust/target/debug/entra-appreg --help
+```
+
+On Windows append `.exe` to the binary path. The first Cargo build may need internet access to download dependencies.
+
+**C#:**
 
 ```sh
 dotnet --version
@@ -56,11 +113,11 @@ dotnet run src/entra-appreg.cs -- --version
 dotnet run src/entra-appreg.cs -- --help
 ```
 
-The first run restores the NuGet dependency and compiles; it may need internet access. Subsequent runs use the SDK's build cache. There is no `.csproj` or separate setup/build command. Help and version do not call Azure CLI or Graph.
+The first C# run restores the NuGet dependency and compiles; it may need internet access. Subsequent runs use the SDK's build cache. There is no `.csproj` or separate C# setup/build command. Help and version do not call Azure CLI or Graph in either implementation.
 
 ### 2. Sign in to the intended tenant
 
-Replace `YOUR_TENANT_ID` with your directory's tenant ID:
+If already signed in to the intended tenant, skip `az login` and inspect the current account. Otherwise replace `YOUR_TENANT_ID` with your directory's tenant ID:
 
 ```sh
 az login --tenant "YOUR_TENANT_ID"
@@ -70,6 +127,20 @@ az account show --query "{tenantId:tenantId,user:user.name}" --output json
 For a directory without an Azure subscription, add `--allow-no-subscriptions` to `az login`. Check the reported tenant and account before running any write command.
 
 ### 3. Check read access, then create an app
+
+Choose **one** implementation; do not run both creation examples unless you want two registrations.
+
+**Rust:**
+
+```sh
+# Read-only; requires permission to read registrations.
+rust/target/debug/entra-appreg list --top 5
+
+# Creates a real registration and writes ./My SPA.txt.
+rust/target/debug/entra-appreg create --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
+```
+
+**C#:**
 
 ```sh
 # Read-only; requires permission to read registrations.
@@ -81,7 +152,7 @@ dotnet run src/entra-appreg.cs -- create --name "My SPA" --redirect-urls http://
 
 The create command configures a single-tenant SPA without a scope or secret. Save its object/client IDs. Repeating it without an existing `--appid` creates another registration; use a test tenant when experimenting.
 
-The `--` separates SDK arguments from application arguments. Quote names and comma-separated URI lists. The one-line commands work in Bash, Zsh, and PowerShell; later examples using `\` line continuation are Bash/Zsh syntax (join their lines for PowerShell).
+The `--` separates SDK arguments from application arguments for `dotnet run` and `cargo run`; omit it when invoking the built Rust binary directly. Quote names and comma-separated URI lists. The one-line commands work in Bash, Zsh, and PowerShell; later examples using `\` line continuation are Bash/Zsh syntax (join their lines for PowerShell).
 
 On Linux/macOS, direct execution is optional:
 
@@ -155,7 +226,7 @@ dotnet run src/entra-appreg.cs -- list --json
 - **`--json`** prints a JSON array and nothing else on stdout, so you can pipe it to a tool such as `jq`.
 - **Sorted by name.** If there are more matches than `--top`, you see the first ones Graph returns, sorted by name, plus a note that more exist. Narrow with `--name` or use `--top all`.
 - **Read-only.** Nothing is created or changed, and no file is written.
-- **Needs read permission.** Your account must be allowed to read app registrations in the tenant. If not, Graph answers 403 and the script exits with code 1.
+- **Needs read permission.** The Azure CLI identity must be allowed to read app registrations. If not, Graph answers 403 and the command exits 1.
 - **Options for the other commands are rejected** with exit code 2: `--appid`, `--redirect-urls`, `--audience`, any `--scope-*` option, `--create-secret` and the `--secret-*` options.
 
 Each app is shown as a numbered entry: its name, then its client ID and object ID. Output looks like this:
@@ -439,7 +510,7 @@ The seven lines from `Application ID URI` to `Scope state` appear only with `--s
 | Code | Meaning |
 |---|---|
 | `0` | Success, including help/version, listing, creating an app, adding a scope, or finding the existing `--appid` |
-| `1` | Runtime failure: sign-in failed (the Azure CLI is missing or you are not signed in), Graph error, timeout, unexpected response, or the output file could not be written (in which case the values are printed to the console so a secret isn't lost). For `expose-api` also: the app was not found, or it already has a scope with that name. For `list` also: no permission to read app registrations |
+| `1` | Runtime failure: missing/invalid authentication configuration or failed sign-in/token acquisition, Graph error, timeout, unexpected response, or report-write failure (the full report is printed to preserve a one-time target secret). Also covers an absent target or duplicate scope in `expose-api`. |
 | `2` | Bad or missing command-line arguments, including no arguments at all (which prints the general help) |
 
 ## Security
@@ -449,7 +520,7 @@ The seven lines from `Application ID URI` to `Scope state` appear only with `--s
 - Move the secret to a proper store, such as Key Vault, as soon as you can.
 - The secret is not printed to the console unless the output file can't be written; then it is printed once so it isn't lost. Don't run the script where stdout is logged publicly.
 - On Linux/macOS the output file is created readable and writable by you only. On Windows it gets the folder's normal permissions, so check who can read that folder.
-- The script signs in through your Azure CLI login (`az login`) and holds the access token in memory only. It never writes the token anywhere, and `list` and `expose-api` handle no secrets.
+- Both implementations use Azure CLI login and hold access tokens in memory, not report files. `list` and `expose-api` do not create secrets. Use narrowly scoped permissions and protect the Azure CLI login profile.
 - Redirect URIs, names and IDs are sent to Graph as given after the checks described above. Values in the OData name filter are escaped, and the next-page links Graph returns are only followed if they point at `graph.microsoft.com`.
 
 ## Troubleshooting
@@ -458,10 +529,10 @@ The seven lines from `Application ID URI` to `Scope state` appear only with `--s
 |---|---|
 | `dotnet run src/entra-appreg.cs` fails to run the file | Check `dotnet --version` (SDK 10+) and run from the repository root. |
 | `dotnet run src/entra-appreg.cs` runs a different project | There is a `.csproj` in the current folder. Use `dotnet run --file src/entra-appreg.cs -- --help` to select the file explicitly. |
-| "Could not get an access token to call Microsoft Graph" (exit code 1) | The Azure CLI isn't installed, or you aren't signed in. Install it, then run `az login`. The `Details:` line shows the CLI's own explanation. |
-| Signed in to the wrong account or tenant | The script acts as whatever `az account show` reports. Sign in again with `az login --tenant <tenant id>` (or `az login` with the right account). |
-| `403` from Graph (creating an app, `expose-api`, or `list`) | Your account, or the permissions the sign-in carries, doesn't allow it in this tenant. Ask a tenant admin, or try an account with the *Application Developer* role. |
-| `Application not found` (`expose-api`) | The ID matches neither an object ID nor a client ID in the tenant you are signed in to. Check with `list`, and check you are signed in to the right tenant (for the Azure CLI: `az login --tenant <tenant id>`). |
+| "Could not get an access token to call Microsoft Graph" (exit code 1) | Install Azure CLI, ensure `az` is on `PATH`, and sign in with `az login`. Rust authentication diagnostics omit raw credential output. |
+| Wrong identity or tenant | Inspect `az account show` and sign in deliberately to the intended tenant. Neither implementation selects environment-based client-secret credentials. |
+| `403` from Graph | Check the selected identity's permissions/roles and target ownership. Token acquisition alone does not grant Graph access. |
+| `Application not found` (`expose-api`) | Neither object-ID nor client-ID lookup found the target in the configured tenant. Check `list` and the implementation's tenant selection. |
 | `already has a scope named ...` (`expose-api`) | The app has that scope name already. Nothing was changed. Choose another name. |
 | `Unknown or incomplete argument` (exit code 2) | A typo, or an option with no value after it. Run with `--help`. |
 | `dotnet` shows its own help for `--help` | You left out the `--` after the script name. |
@@ -471,6 +542,8 @@ The seven lines from `Application ID URI` to `Scope state` appear only with `--s
 | Unexpected behaviour from build settings | The script is inside a `.csproj` folder, or a parent folder has `Directory.Build.props`, `Directory.Packages.props` or `nuget.config`. Keep the script in its own folder. |
 
 ## Notes on the code
+
+The following notes describe the retained **C#** implementation; Rust's modules are described below.
 
 - The `#:package Azure.Identity@*` line at the top uses the latest version. Pin a specific version for reproducible builds.
 - `#:property PublishAot=false` turns off the native AOT publishing that file-based apps enable by default, because Azure.Identity may not be AOT-friendly. The docs describe it as a publishing setting; `dotnet run` runs the script as ordinary managed code either way.
@@ -484,7 +557,7 @@ The seven lines from `Application ID URI` to `Scope state` appear only with `--s
 
 ### How the code is organised
 
-The file reads top to bottom. The header comment is a full reference; the code has numbered steps:
+The C# file reads top to bottom. The header comment is a full reference; the code has numbered steps:
 
 | Part | What it does |
 |---|---|
@@ -494,6 +567,10 @@ The file reads top to bottom. The header comment is a full reference; the code h
 | `3`–`8` (`create`) | Check `--appid` → validate everything → create the app → expose an API → add a secret → write the file |
 | Helpers (bottom) | Graph calls (`PostAsync`, `PatchAsync`, `GetApplicationAsync`), the commands (`ListAsync`, `ExposeApiAsync`), scope logic (`ResolveScope`, `BuildScope`), option checks (`Supplied`, `SecretOptionsSupplied`, `ScopeDetailOptionsSupplied`), `ShowHelp` and utilities (`Require`, `TryParseDate`, `GetTenantIdAsync`, `WriteResultFile`) |
 | `ScopeSpec` (last) | The record holding one resolved scope; it is at the end because type declarations must follow all top-level statements |
+
+Rust keeps the same sequential flow in six modules under `rust/src/`: `main.rs` maps exits, `cli.rs` uses Clap 4 and prints help, `auth.rs` acquires the Azure CLI login token through official Azure Identity/Core crates, `graph.rs` owns the shared `reqwest` Graph client, `app.rs` implements commands and scope/secret rules, and `report.rs` atomically writes reports. Unit tests live beside helpers and workflows. No Graph SDK is used.
+
+A small compatibility pass retains C#'s case-insensitive command selection, default `create`, and version/help precedence. Clap handles option recognition, values, aliases, repeats, and unknown arguments. Scalar repeats keep the last value, redirect aliases accumulate, and single-hyphen values remain literal. Unlike Clap's usual syntax, `--option=value` and the `--` terminator within application arguments remain rejected; use space-separated values. Semantic creation validation still happens after authentication and the existing-ID lookup.
 
 ### After every review or change
 
@@ -511,6 +588,7 @@ Before marking work complete, update both this README and [CHANGELOG.md](CHANGEL
 3. Change the version line at the top of this README.
 4. Add an entry to [CHANGELOG.md](CHANGELOG.md) and update the [smoke test checklist](#smoke-test-checklist) if behaviour changed.
 5. If you add an option, update all of: the parsing code, the validation code, `ShowHelp`, the header comment's `ARGUMENTS`, and the [Options](#options) table. If it is a secret or scope option, also add it to `SecretOptionsSupplied` or `ScopeDetailOptionsSupplied`, which is what makes the other commands reject it.
+6. Keep Rust's `Cargo.toml`, `Cargo.lock`, version/help output, parser, and behavioral tests synchronized with the C# contract.
 
 ## Known limitations
 
@@ -523,24 +601,44 @@ These are deliberate omissions in 1.0, not bugs:
 - **Not covered:** authorized client applications (pre-authorisation), custom Application ID URIs, editing or deleting scopes, adding secrets to an existing app, and deleting apps.
 - **`--help` and `--version` are recognised anywhere in the arguments**, including as the value of another option.
 - **Secrets are written to a plain-text file** (see [Security](#security)).
+- **API exposure preserves the fetched snapshot, not concurrent edits.** Neither implementation uses conditional updates or an ETag scheme.
+- **Remote text is printed verbatim in human output.** Prefer JSON listing when processing untrusted names; JSON escapes control characters.
+- **Report failure recovery includes the full one-time secret on stdout.** Windows reports inherit directory ACLs; Unix reports are created owner-only. Protect captured output as well as report files.
 
 ## Local verification
 
-With .NET 10+ and Python 3.9+ installed, run the authentication-free CLI regressions from the repository root:
+Run from the repository root with Python 3.9+, the .NET 10 SDK for C#, and a current Rust toolchain:
 
 ```sh
+# Required formatting and lint gates (see AGENTS.md).
+cargo fmt --manifest-path rust/Cargo.toml --check
+cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+
+# Build and unit-test Rust with pinned dependencies.
+cargo build --manifest-path rust/Cargo.toml --locked
+cargo test --manifest-path rust/Cargo.toml --locked
+
+# Run the same process-level suite against C# and Rust.
 python3 -m unittest discover -s tests -v
+ENTRA_APPREG_BINARY="$(pwd)/rust/target/debug/entra-appreg" \
+  python3 -m unittest discover -s tests -v
 ```
 
-The suite in `tests/test_cli.py` uses Python's standard-library `unittest` and `tests/fake_az.py` behind a temporary `az` executable. Its seven test methods exercise missing values, forbidden options, blank app IDs, invalid leading-dot scopes, help precedence, exit codes, and single-hyphen names. A loopback-only proxy blocks Graph traffic even when the fixture supplies a test token; your Azure login is never used. No Python package installation is needed.
+In PowerShell, set `$env:ENTRA_APPREG_BINARY = (Resolve-Path rust/target/debug/entra-appreg.exe).Path` before the second suite run, then remove it with `Remove-Item Env:ENTRA_APPREG_BINARY`. A supplied binary path must be absolute and executable; a missing binary fails setup rather than silently testing C#.
 
-There is no configured lint task, test project for `dotnet test`, or coverage threshold. Use the checklist below for live-tenant behavior; local tests do not establish Graph integration correctness.
+The process suite in `tests/test_cli.py` runs all 21 methods against either implementation with fake Azure CLI and a closed loopback proxy. It verifies authentication-free help/version and input errors, create tenant discovery/pinning, list/expose active-context selection, malformed token failures, clean JSON stdout, and authentication-before-semantic-validation ordering. No operator login is used.
+
+The 43 Rust tests cover Clap compatibility, frozen-clock secret lifetimes, scopes, Unicode-safe truncation, create/partial failure, API preservation, lookup safety, pagination/truncation/cycles, unsafe links and redirects, and secure report files. Authentication tests exercise the official Azure CLI credential through an injected executor: normalized tenant pinning, active context, opaque tokens, malformed/empty responses, required expiry fields, safe diagnostics, deadline cancellation, and concurrent stdout/stderr drainage. Tests do not mutate process-global credential environment or working directories.
+
+Independent read-only reviews of the initial Rust port's command parity and authentication/transport/report security found no remaining actionable defects. The port review also corrected a URI-parser difference: `http:example.com` fails like C#, rather than being repaired into an absolute URL. Source-derived pagination-cycle and UTF-16 truncation findings are fixed in Rust only, as documented above; the C# file was retained unchanged. The subsequent Clap migration passed all unit tests, both implementations' expanded process suite, and direct fake-Azure CLI smoke for help/version, parsing errors, and JSON authentication failure.
+
+Rust formatting and strict Clippy checks are mandatory under `AGENTS.md`. There is no C# `dotnet test` project, configured CI gate, or coverage threshold. Local tests do not establish live Graph authorization or cross-platform correctness.
 
 ## Smoke test checklist
 
-The CLI regressions and isolated Graph-response replays passed during review on macOS with .NET SDK 10.0.401. The replays used temporary fake CLI/HTTP responses to verify lookup safety, malformed responses, pagination truncation, scope preservation, case-sensitive redirects, and opaque access tokens. Those one-off replays are **not** part of the checked-in test suite and do not verify a live tenant. Run the following checklist against a **test tenant** before relying on live operations. Abbreviated commands below are arguments to `dotnet run src/entra-appreg.cs --`.
+Historical verification of the initial Rust port included a temporary `offline_smoke` example using fake Azure CLI and loopback Graph: 30 scenarios covered full create/expose/list workflows, recovery IDs, secret/report handling, pagination, malformed responses, and preservation. That example was removed. These historical results are distinct from the current credential verification below.
 
-A separate one-off report-helper check verified directory/file/dangling-symlink collisions, 16 simultaneous writers, preservation of existing secrets, owner-only Unix permissions, and propagation of genuine open failures. It is not part of the checked-in CLI suite.
+These checks do not establish live-tenant correctness. Deliberately select a **test tenant** through Azure CLI before the checklist below. For Rust, substitute `rust/target/debug/entra-appreg` (or `.exe`) for the C# invocation. Start with read-only `list --top 1 --json`, then verify create, existing-ID no-op, exposure/duplicate rejection and preservation, secret expiry/report contents, and portal state. No live tenant operation is part of routine offline checks.
 
 1. `dotnet run src/entra-appreg.cs -- --version` prints `entra-appreg 1.0.0`.
 2. `dotnet run src/entra-appreg.cs -- --help`, `create --help`, `expose-api --help` and `list --help` print help without needing to sign in.
@@ -553,7 +651,7 @@ A separate one-off report-helper check verified directory/file/dangling-symlink 
 9. `create` with `--create-secret --secret-expiry 90`: check the secret's description and expiry in the portal, and that the output file holds the secret.
 10. `create` with a bad option (for example `--audience nope`): exits with code 2 and creates nothing.
     Also check `--scope-name .read`: it must exit 2 before any app is created.
-11. Sign out with `az logout` and run `list`: it should print the "Could not get an access token" message and exit with code 1 (no stack trace). Sign back in afterwards.
+11. Verify signed-out behavior only in an isolated Azure CLI profile; do not log out a shared operator login. Both should report authentication failure on stderr and exit 1, with empty stdout for `list --json`.
 12. Run with no arguments: it prints the general help and exits with code 2.
 13. `list --json` prints a JSON array and nothing else on stdout.
 14. Create with both `https://example.com/Callback` and `https://example.com/callback`: verify both case-distinct paths in the portal. Repeat an exact URI and verify it appears only once.
@@ -568,10 +666,13 @@ See [CHANGELOG.md](CHANGELOG.md) for unreleased changes and the 1.0.0 release hi
 | Verification | Status |
 |---|---|
 | Restore/build through `dotnet run`, version, and command help | Passed on macOS with .NET SDK 10.0.401 |
-| Checked-in offline CLI regression suite | All seven test methods passed |
-| Graph behavior with isolated fake responses | Passed one-off review checks; not a live integration test |
-| Tenant lookup timeout and child-process cleanup | Passed locally |
-| Report naming collisions and concurrent writers | Passed one-off local helper checks |
-| Windows execution and live-tenant operations | Not verified |
+| Checked-in offline CLI regression suite | All 21 methods passed against each of Rust and C#; no skips |
+| Rust locked build and permanent unit tests | Build passed; all 43 tests passed on macOS with Rust 1.98.1 |
+| Rust formatting and strict lint | `cargo fmt --check` and locked `cargo clippy --all-targets -- -D warnings` passed |
+| Actual Rust SDK credential smoke | Fake CLI token acquired, normalized tenant pinned, and post-authentication validation reached; version bypass and clean JSON auth failure passed |
+| Graph workflows with isolated fake responses | Permanent workflow tests pass; 30 initial-port one-off scenarios are historical evidence |
+| Azure CLI identity behavior | Passed SDK/executor tests for tenant selection, tokens, expiry, deadline cancellation, secrecy, and pipe drainage |
+| Report collisions, concurrent writers, permissions, write/flush failures | Passed permanent Rust filesystem tests |
+| Windows/Linux execution and live-tenant operations | Not verified; Windows ACL behavior needs a Windows run |
 
 Run the [local checks](#local-verification) after changes, then use the [smoke test checklist](#smoke-test-checklist) in a test tenant before production use.

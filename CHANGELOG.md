@@ -6,6 +6,9 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Fixed
 
+- Rust: detect repeated Graph pagination links instead of looping on empty cyclic pages; retain the next-link origin restriction and reject redirects.
+- Rust: cap secret descriptions at 128 UTF-16 units without splitting a Unicode scalar. The additive port leaves C# unchanged.
+- Rust parity: require explicit HTTP(S) redirect authority instead of accepting WHATWG-repaired inputs such as `http:example.com`; verified C# rejection and retained a shared regression.
 - Reject missing option values instead of consuming a following long option; reject empty redirect options on `list` and `expose-api` before authentication.
 - Reject explicitly empty or whitespace-only `--appid` values before authentication, preventing an empty variable from silently opting into creation.
 - Reject scope names beginning with `.` before Graph writes, matching Graph's scope-name restriction.
@@ -19,12 +22,20 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Changed
 
+- Switch Rust authentication to the official `azure_identity::AzureCliCredential`, matching C#'s use of the current `az login` session. Azure CLI is again a runtime dependency; this supersedes the earlier shell-free/client-secret design. No environment-credential fallback remains.
+- Restore create-only tenant discovery and tenant-pinned token acquisition; list/expose use the active CLI context. Keep tokens opaque, bound authentication, and replace SDK errors with safe diagnostics rather than expose raw credential output.
+- Retain `reqwest` for Graph HTTP with fixed Graph endpoint and disabled redirects/retries. Update help, README, repository instructions, and offline fixtures for Azure CLI authentication.
+- Expand README's quick start with explicit Rust and C# commands, both version invocations, existing `az login` reuse, tenant inspection, and a warning that running both creation examples creates two registrations. No runtime behavior changed. Rechecked the documented locked Rust build and both implementations' help/version commands successfully; no live Azure operations were run.
+- Require passing rustfmt, strict all-target Clippy, the locked build, Rust tests, and shared process checks in `AGENTS.md`; document the exact commands in README. Move CLI tests after production items and name the HTTP fixture response type. Keep the one-shot parsed invocation stack-allocated with a narrowly justified `large_enum_variant` expectation rather than adding a heap allocation.
+- Replace Rust's manual option loop with Clap 4's derive parser (`clap` 4.6.7 pinned in `Cargo.lock`). Retain the C# command/help/version pre-pass, space-separated-only syntax, repeated scalar/flag/redirect behavior, single-hyphen values, detailed help, and deferred semantic validation. C# remains unchanged.
 - Use ordinal hash-set lookup for redirect deduplication instead of repeated linear scans.
 - Retain only displayed fields while collecting Graph list results; avoid cloning response trees and creating an additional sorted list.
 - Reuse the scope collection already cloned with API settings instead of cloning every existing scope twice.
 
 ### Added
 
+- A complete Rust CLI alongside the retained C# implementation, under `rust/`, with a pinned Cargo lockfile and the same create/expose/list option, output, exit-code, and recovery contracts.
+- Shared Python CLI checks selectable with `ENTRA_APPREG_BINARY`, plus Rust helper and isolated HTTP/subprocess tests.
 - Offline CLI regression checks in `tests/test_cli.py`, using standard-library Python `unittest`, a controlled Azure CLI fixture, and a loopback-only proxy to prevent Graph traffic.
 - Repository guidelines in `AGENTS.md` and `.gitignore` rules for secret-bearing reports, build output, IDE state, and test caches.
 - Step-by-step README instructions for installation checks, tenant sign-in, read-only listing, creation, and local verification.
@@ -32,10 +43,20 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Verification
 
+- Current Azure CLI credential cutover: locked build, all 43 Rust unit/workflow tests, and all 21 process tests against each implementation passed with no skips. Formatting and strict all-target Clippy passed. Integration caught and corrected the SDK executor import to its public root re-export.
+- Actual Rust binary smoke with fake `az` verified successful SDK token acquisition for Graph `.default`, normalized create tenant pinning, subsequent local validation, authentication-free version, and empty JSON stdout on login failure. No live Azure operation was performed.
+- Rust requires Azure CLI 2.54.0+ for the SDK's numeric `expires_on` field. Authentication has a ten-second deadline and kills the directly spawned process on cancellation; termination of all shell descendants is not guaranteed. Windows/Linux and live-tenant verification remain outstanding.
+- Historical, superseded client-secret implementation: 42 Rust unit/workflow tests and 21 Rust process tests passed; C# passed 17 applicable checks with four skips. Its one-off native SDK/reqwest loopback smoke also passed. Those results do not verify the current Azure CLI credential implementation.
+- Final Rust formatting and lint gates passed: `cargo fmt --manifest-path rust/Cargo.toml --check` and `cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings`.
 - Local CLI regressions and isolated Graph-response replays passed on macOS with .NET SDK 10.0.401.
-- Seven CLI test methods pass; one-off report-helper checks also cover 16 simultaneous writers, occupied paths, existing-secret preservation, Unix permissions, and genuine open-error propagation.
+- Before native authentication, the Clap migration passed 17 shared methods against both C# and Rust on macOS. The initial source contained seven baseline methods (not the eight recorded during planning); their non-authentication behavior remains covered.
 - Follow-up scope checks confirmed leading-dot rejection while preserving internal dots, underscores, hyphens, and the 120-character boundary; the real CLI rejected an empty `--appid` with exit 2 before authentication.
-- Windows execution and live-tenant operations remain unverified; use the README smoke checklist in a test tenant.
+- Before the temporary client-secret cutover, Rust 1.98.1 passed the locked build and 45 tests, including handwritten subprocess authentication checks. Current token acquisition is owned by the official Azure CLI credential SDK.
+- Actual Rust process smoke passed version, general/create/expose/list help, invalid top/blank app ID, and JSON authentication failure with no stdout pollution.
+- Clap migration smoke exercised the real binary's version, all four help topics, version-over-help precedence, missing/inline values, repeated JSON flags, and single-hyphen values under fake Azure CLI. Exit codes, authentication bypass, and clean JSON stdout were preserved; no live Graph operation was run.
+- Historical initial-port evidence: a temporary `offline_smoke` Cargo example passed 30 loopback/fake-Azure scenarios covering Graph workflows and report recovery. The example was removed; these results predate the native authentication cutover.
+- Independent read-only parity and security/reliability reviews of the initial Rust port found no remaining actionable defects. The later Clap migration was checked with the expanded unit/process suites and direct CLI smoke. Source-derived C# pagination-cycle and surrogate-truncation findings remain in C# by the approved coexistence decision; the Rust fixes are verified offline.
+- Live-tenant operations and Windows/Linux execution remain unverified; macOS tests do not establish Windows ACL or live Graph behavior. No live authentication-state changes or tenant mutations were performed.
 
 ## 1.0.0
 
