@@ -6,6 +6,17 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Fixed
 
+- Replace spaces with hyphens in report filenames (for example, `Test App Delete1` becomes `Test-App-Delete1.txt`), retaining edge trimming, collision suffixes, and unchanged report contents. Verification: offline report-writing executable, all 54 tests, formatting, strict Clippy, compilation, and debug/release builds passed on macOS.
+
+- Block creation when a preflight Graph `displayName eq` lookup finds an existing registration; escape OData names, follow validated pagination, reject cycles/malformed responses, and stop on lookup errors. Existing `--appid` no-ops are preserved. This requires Graph read access and cannot guarantee uniqueness across concurrent creates or delayed directory visibility.
+- Use `Application (client) ID` in list/delete console output, matching the report-file label; preserve `AUTH_CLIENT_ID` and JSON contracts. Verification: all 53 tests, formatting, strict Clippy, compilation, debug/release builds, offline duplicate-rejection executable, and actual-binary create/list help passed on macOS. No live tenant calls made.
+
+- Make create's `--redirect-urls` / `--redirect-url` optional, defaulting to an empty SPA redirect URI list while retaining validation of supplied URIs. Update CLI help and README. Verification: all 52 tests, including an offline empty-redirect POST regression, formatting, strict Clippy, compilation, debug/release builds, and actual-binary create help passed on macOS. No live tenant creation performed.
+
+- Name delegated `Application.Read.All` and Azure CLI admin consent in application-read 403 diagnostics, explain user directory read access and Directory Readers, and distinguish Entra access from Azure subscription roles. Keep read-permission advice off write failures. Verification: offline production-client GET/POST 403 smoke, all 51 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. No live tenant operations performed.
+
+- Make Graph HTTP 403 errors lead with a plain-English access-denied explanation, Azure CLI account/tenant checks, and administrator guidance for Graph consent, directory roles, and ownership. Preserve the complete original response under technical details; no retries or lookup fallback are added. Verification on macOS: all 51 tests, rustfmt, strict Clippy, compilation, debug/release builds, authentication-free CLI smoke, and an offline production-client 403 replay passed. Live tenant and Windows/Linux behavior remain unverified.
+
 - Rust: detect repeated Graph pagination links instead of looping on empty cyclic pages; retain the next-link origin restriction and reject redirects.
 - Rust: cap secret descriptions at 128 UTF-16 units without splitting a Unicode scalar. The additive port leaves C# unchanged.
 - Rust parity: require explicit HTTP(S) redirect authority instead of accepting WHATWG-repaired inputs such as `http:example.com`; verified C# rejection and retained a shared regression.
@@ -40,6 +51,8 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 - Reuse the scope collection already cloned with API settings instead of cloning every existing scope twice.
 
 ### Added
+
+- Check Azure CLI account availability before token acquisition for every authenticated command. Provide actionable, secret-safe guidance for unavailable login, missing CLI executable, and token acquisition failure after a successful account check. Preserve create-only tenant pinning, the overall ten-second deadline, JSON stdout isolation, and login-free help/version. Verification: all 50 tests and Rust quality/build gates passed on macOS; actual-binary fake-CLI smoke covered signed-out, missing CLI, token failure, and help/version. No live Azure session was changed.
 
 - List now displays the authenticated tenant's name and ID from Graph `/organization`, including empty lists. JSON mode sends tenant details to stderr and preserves the stdout array contract. Organization lookup failures stop listing.
   Verification: all 49 existing tests, rustfmt, strict all-target Clippy, cargo check, debug/release builds, and actual-binary list help passed on macOS. Offline production-workflow smoke covered text/JSON tenant output, empty results, organization 403, and malformed organization responses. No live Azure calls were made.

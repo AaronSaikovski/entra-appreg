@@ -375,7 +375,7 @@ EXAMPLES
 const CREATE_HELP: &str = r#"create - create a new app registration (the default command)
 
 USAGE
-  cargo run -- [create] --name <text> --redirect-urls <list> [options]
+  cargo run -- [create] --name <text> [--redirect-urls <list>] [options]
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
@@ -387,19 +387,23 @@ REQUIRED (when a new app is created)
   --name <text>
       Display name of the app registration. Also names the output file and
       the secret description.
+
+OPTIONS
   --redirect-urls <list>
-      Full redirect URIs for the SPA, comma-separated. Surrounding whitespace
+      Optional; defaults to no redirect URIs. Full redirect URIs for the SPA,
+      comma-separated. Surrounding whitespace
       and exact repeats are removed; path case and trailing slashes are
       preserved. Can be repeated. Alias: --redirect-url. For example:
       "http://localhost:5173/auth/callback,https://myapp.example.com/auth/callback"
 
-OPTIONS
   --audience <value>
       Supported account types. Case-insensitive. Default: AzureADMyOrg
       One of: AzureADMyOrg, AzureADMultipleOrgs, AzureADandPersonalMicrosoftAccount, PersonalMicrosoftAccount
   --appid <id>
       An existing app registration, by object ID or client ID. If it exists,
       nothing is created. An explicitly blank ID is rejected.
+      New registrations are rejected if Graph finds the same display name.
+      This check requires Graph read access and cannot prevent concurrent creates.
 
 EXPOSE AN API (optional)
   --scope-name <value>
@@ -541,7 +545,7 @@ HELP
 
 OUTPUT
   A numbered list sorted by name. Each app shows its name, then its
-  Client ID and Object ID. Either ID works with "--appid" for both
+  Application (client) ID and Object ID. Either ID works with "--appid" for both
   "expose-api" and "create".
   Exit codes: 0 success, 1 failure (for example no permission to read
   app registrations), 2 bad arguments.

@@ -49,9 +49,13 @@ az login --tenant "YOUR_TENANT_ID"
 
 For tenants without an Azure subscription, add `--allow-no-subscriptions`. The tool does not log in automatically or read Azure CLI's private token cache. `AZURE_CLIENT_SECRET` and other environment-based client-secret credentials are not selected as a fallback.
 
-Create reads and validates the current tenant and pins token acquisition to it. List, expose-api, and delete use the active Azure CLI context. The selected identity needs Graph read/manage permissions; token acquisition alone does not grant authorization. The SDK requires the numeric `expires_on` field supplied by Azure CLI 2.54.0+.
+Every authenticated command first checks `az account show` for a usable login and validates its tenant ID. If no usable account is available, it stops before token acquisition and asks you to run `az login` or `az login --tenant <tenant-id>`. Failure to launch Azure CLI reports installation guidance; a token failure after a successful account check instead explains that the session may need reauthentication. A cached account is not proof of a valid session: token acquisition must still succeed. Errors go to stderr with exit 1, preserving empty stdout for failed JSON commands. The entire authentication operation retains its ten-second deadline.
 
-After verifying read access, this command **creates a real registration** and writes `My SPA.txt` in your current directory:
+Create pins token acquisition to the checked tenant. List, expose-api, and delete use the active Azure CLI context. The selected identity needs Graph read/manage permissions; token acquisition alone does not grant authorization. The SDK requires the numeric `expires_on` field supplied by Azure CLI 2.54.0+.
+
+Login-check verification on macOS: all 50 tests, rustfmt, strict Clippy, compilation, and debug/release builds passed. Actual-binary smoke with an isolated fake Azure CLI verified signed-out, missing-executable, and token-failure guidance, secret-safe stderr, empty JSON stdout, and login-free help/version. No shared Azure session was changed; live and Windows/Linux behavior remain unverified.
+
+After verifying read access, this command **creates a real registration** and writes `My-SPA.txt` in your current directory:
 
 ```sh
 entra-appreg create --name "My SPA" --redirect-urls http://localhost:5173/auth/callback
@@ -79,7 +83,7 @@ Unknown commands fail before help/version handling. Otherwise `--version` takes 
 | Option | Behavior |
 |---|---|
 | `--name <text>` | Required when creating a new registration; also used for the report filename. |
-| `--redirect-urls <list>` / `--redirect-url <list>` | Required for new registrations. Comma-separated absolute HTTP(S) URIs; repeatable. Trims whitespace and removes exact duplicates, preserving path case and trailing slashes. |
+| `--redirect-urls <list>` / `--redirect-url <list>` | Optional; defaults to no redirect URIs. Comma-separated absolute HTTP(S) URIs; repeatable. Trims whitespace and removes exact duplicates, preserving path case and trailing slashes. |
 | `--appid <id>` | Lookup by object ID or client ID. Existing app: exit without changes or report. Two lookup 404s: proceed to creation. Explicitly blank IDs are rejected; exact `no-id` sentinel skips lookup. |
 | `--audience <value>` | Case-insensitive; default `AzureADMyOrg`. See account types below. |
 | `--scope-*` | Optional API scope configuration; see Scope options. |
@@ -89,6 +93,12 @@ Unknown commands fail before help/version handling. Otherwise `--version` takes 
 | `--secret-end <DD/MM/YYYY>` | Required for custom lifetime; strictly after start, valid through 23:59:59 UTC. |
 
 Creation-field semantics are validated after authentication and optional existing-ID lookup, so an existing ID does not require name/redirect fields. Non-404 lookup failures never fall through to creation. Scope/secret detail options without their enabling option are rejected.
+
+Redirects may be omitted: `cargo run --locked -- create --name "My App"` sends an empty SPA redirect URI list. Supplied URIs still require absolute HTTP(S) URLs. Verification: all 52 tests, formatting, strict Clippy, compilation, debug/release builds, and actual-binary create help passed on macOS; an offline HTTP fixture verified the empty redirect payload. Live creation was not exercised.
+
+Human-readable console identifiers use **Application (client) ID**, matching the existing report-file label. Machine-readable `AUTH_CLIENT_ID` and JSON keys remain unchanged.
+
+Duplicate-name verification: all 53 tests and Rust quality/build gates passed on macOS; an offline production-workflow executable displayed duplicate rejection, and actual-binary create/list help reflected the changes. Regression fixtures covered duplicate rejection, escaped names, failed lookups, and successful creation after an empty lookup. No live tenant calls were made; concurrent uniqueness is not guaranteed.
 
 Dates imply custom expiry when `--secret-expiry` is omitted. Do not combine dates with a numeric preset. A future start is midnight UTC; today's start is omitted from the Graph payload. Tenant policy may cap secret lifetime independently.
 
@@ -174,7 +184,9 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
 
 ## Output, failures, and security
 
-Create prints `AUTH_APP_ID` (object ID) and `AUTH_CLIENT_ID` (client/application ID) immediately after Graph creates the registration, before optional mutations. Save these IDs for recovery. Reports contain IDs, tenant, redirects, and any requested scope/secret details. Filenames are sanitized and collision-safe: `My SPA.txt`, `My SPA-1.txt`, etc.; existing files are not overwritten.
+Create prints `AUTH_APP_ID` (object ID) and `AUTH_CLIENT_ID` (client/application ID) immediately after Graph creates the registration, before optional mutations. Save these IDs for recovery. Reports contain IDs, tenant, redirects, and any requested scope/secret details. Filenames replace spaces with hyphens and are sanitized and collision-safe: `My-SPA.txt`, `My-SPA-1.txt`, etc.; existing files are not overwritten. Display names and report contents are unchanged.
+
+Filename verification: an offline executable wrote `Test-App-Delete1.txt` with unchanged contents; all 54 tests and Rust formatting, strict Clippy, compilation, and debug/release build gates passed on macOS. A regression covers collisions between spaced and already-hyphenated names.
 
 | Exit | Meaning |
 |---|---|
@@ -190,7 +202,8 @@ Unix reports are created with mode 0600; Windows inherits directory ACLs. Check 
 
 ### Operational limits
 
-- No retry, rollback, restore command, or name-based deduplication. A later failure can leave an app already created. Recover using the printed IDs; do not blindly rerun create.
+- Create checks Graph's `displayName eq` filter before POST and rejects an existing name (exit 2). Name lookup failures prevent creation. This adds a Graph read-permission requirement and is not atomic: concurrent creates or delayed directory visibility can still produce duplicates. Existing `--appid` matches remain no-ops.
+- No retry, rollback, or restore command. A later failure can leave an app already created. Recover using the printed IDs; do not blindly rerun create.
 - Expose-api preserves the fetched snapshot, not concurrent edits; no conditional update/ETag scheme is used.
 - One scope per invocation; no pre-authorization, custom Application ID URI editor, or add-secret-to-existing-app command.
 - Authentication is bounded to ten seconds; cancellation kills the directly spawned process, but not necessarily all shell descendants. Graph requests have separate ten-second timeouts and no redirects/retries.
@@ -201,12 +214,16 @@ Unix reports are created with mode 0600; Windows inherits directory ACLs. Check 
 | Symptom | Check |
 |---|---|
 | Authentication failure | Azure CLI 2.54.0+ on PATH, `az account show`, then deliberate `az login` to the intended tenant. |
-| Graph 403 | Selected identity's Graph permissions/roles and target ownership. |
+| Graph 403 | The error now leads with permission guidance. Check the identity/tenant with `az account show`; use `az login --tenant <tenant-id>` only if the context is wrong. Otherwise ask your Entra administrator to review Azure CLI's Graph permissions/admin consent and your directory roles or app ownership. Signing in alone does not grant access. Original Graph details remain attached for support. |
 | Wrong tenant/app not found | Active CLI account; either object or client ID works with `--appid`. |
 | Duplicate scope | Choose a new name; matching is case-insensitive. |
 | Cargo shows its own help | Put `--` before the application's `--help`. |
 | Exit 2 | Command-specific required/forbidden options; run that command's `--help`. |
 | Secret expiry rejected | Tenant lifetime policy; try a shorter supported lifetime. |
+
+Permission-diagnostic verification on macOS: all 51 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free binary smoke passed. A temporary executable replayed a Graph 403 through the production HTTP client and verified account/consent guidance plus preservation of the service request ID. No live tenant calls were made; Windows/Linux behavior remains unverified.
+
+Application-read 403 errors name the delegated Graph permission `Application.Read.All` (or a sufficient broader permission), requiring admin consent for Azure CLI rather than the target registration. The signed-in user also needs directory read access; default member permissions can suffice, and Directory Readers is a supported read-only role. Azure subscription Owner/Contributor roles do not provide this access. An offline production-client smoke verified that this guidance appears for application GET requests, not creation POST requests; all 51 tests and Rust quality/build gates passed again.
 
 ## Architecture and development
 

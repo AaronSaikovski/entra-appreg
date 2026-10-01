@@ -41,14 +41,7 @@ async fn main() -> ExitCode {
     let auth = match auth::authenticate(options.command).await {
         Ok(auth) => auth,
         Err(error) => {
-            eprintln!("Could not get an access token to call Microsoft Graph.");
-            eprintln!(
-                "Install Azure CLI 2.54.0 or newer and sign in with 'az login' before running this command."
-            );
-            eprintln!(
-                "Ensure the signed-in account has access to the intended tenant and the required Microsoft Graph permissions."
-            );
-            eprintln!("Details: {error:#}");
+            eprintln!("Authentication failed: {error:#}");
             return ExitCode::from(1);
         }
     };

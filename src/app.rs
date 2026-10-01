@@ -360,11 +360,6 @@ pub(crate) async fn create(
                 audiences.join(", ")
             ))
         })?;
-    if options.redirect_uris.is_empty() {
-        return Err(AppError::Usage(
-            "--redirect-urls is required when creating an application.".into(),
-        ));
-    }
     let mut redirects = Vec::new();
     let mut seen = HashSet::new();
     for uri in &options.redirect_uris {
@@ -404,6 +399,41 @@ pub(crate) async fn create(
         None
     };
     let lifetime = resolve_lifetime(&options, Utc::now()).map_err(AppError::Usage)?;
+    let mut lookup = graph.url("/applications")?;
+    lookup
+        .query_pairs_mut()
+        .append_pair(
+            "$filter",
+            &format!("displayName eq '{}'", name.replace('\'', "''")),
+        )
+        .append_pair("$select", "id")
+        .append_pair("$top", "1");
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(lookup.clone()) {
+            return Err(anyhow::anyhow!("Graph returned a repeated name-check page.").into());
+        }
+        let page = graph.get_url(&lookup).await?;
+        let matches = page
+            .get("value")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("Graph returned an invalid name-check response."))?;
+        if !matches.is_empty() {
+            return Err(AppError::Usage(format!(
+                "An app registration named {name:?} already exists in this tenant. Choose a different --name, or use --appid to reference an existing registration."
+            )));
+        }
+        match page.get("@odata.nextLink") {
+            None | Some(Value::Null) => break,
+            Some(Value::String(link)) => lookup = graph.validate_next_link(link)?,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Graph returned an invalid name-check next-page link."
+                )
+                .into());
+            }
+        }
+    }
     println!("Creating application registration '{name}'");
     println!("  Supported account types: {audience}");
     for uri in &redirects {
@@ -626,7 +656,7 @@ async fn delete(
     // Quote remote fields so terminal control characters cannot disguise the target.
     writeln!(
         output,
-        "Delete this app registration?\n  Name: {name:?}\n  Object ID: {object_id:?}\n  Client ID: {client_id:?}\nDeletion can interrupt applications using this registration."
+        "Delete this app registration?\n  Name: {name:?}\n  Object ID: {object_id:?}\n  Application (client) ID: {client_id:?}\nDeletion can interrupt applications using this registration."
     )
     .context("Could not display deletion target")?;
     write!(output, "Type 'yes' to delete; any other answer cancels: ")
@@ -646,7 +676,7 @@ async fn delete(
         .await?;
     writeln!(
         output,
-        "Deleted application {object_id:?} (client ID {client_id:?})."
+        "Deleted application {object_id:?} (Application (client) ID: {client_id:?})."
     )
     .context("Application was deleted, but could not display completion")?;
     Ok(())
@@ -785,7 +815,7 @@ async fn list(options: Options, graph: &GraphClient) -> Result<(), AppError> {
         let indent = " ".repeat(width + 2);
         for (index, app) in apps.iter().enumerate() {
             println!("{:>width$}. {}", index + 1, app.name);
-            println!("{indent}Client ID: {}", app.client_id);
+            println!("{indent}Application (client) ID: {}", app.client_id);
             println!("{indent}Object ID: {}", app.id);
         }
         println!();
@@ -866,7 +896,6 @@ mod tests {
             let output = String::from_utf8(output).unwrap();
             let (target, _) = output.split_once("Type 'yes'").unwrap();
             assert!(target.contains("Object ID: \"object/id\""));
-            assert!(target.contains("Client ID: \"client\""));
             assert!(target.contains(r#"Name: "App\n\u{1b}[2J""#));
             assert!(!target.contains('\u{1b}'));
             assert!(output.contains("Deleted application"));
@@ -1188,13 +1217,67 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn create_without_redirects_sends_empty_redirect_list() {
+        let fixture = Fixture::new(vec![
+            response(json!({"value":[]})),
+            (403, "creation-denied".into(), vec![]),
+        ]);
+        let error = create(
+            options(&["--name", "App"]),
+            &fixture.client(),
+            Some("tenant"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("creation-denied"));
+        let requests = fixture.take_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].starts_with("POST /v1.0/applications "));
+        let body: Value =
+            serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["spa"]["redirectUris"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn create_blocks_duplicate_names_and_failed_checks() {
+        for reply in [
+            response(json!({"value":[{"id":"existing"}]})),
+            response(json!({})),
+            (403, "lookup-denied".into(), vec![]),
+        ] {
+            let fixture = Fixture::new(vec![reply]);
+            assert!(
+                create(
+                    options(&["--name", "O'Brien & Co"]),
+                    &fixture.client(),
+                    Some("tenant")
+                )
+                .await
+                .is_err()
+            );
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("GET "));
+            let path = requests[0].split_whitespace().nth(1).unwrap();
+            let url = url::Url::parse(&format!("http://fixture{path}")).unwrap();
+            assert!(
+                url.query_pairs()
+                    .any(|(key, value)| key == "$filter"
+                        && value == "displayName eq 'O''Brien & Co'")
+            );
+        }
+    }
 
     #[tokio::test]
     async fn create_workflow_child() {
         let Ok(scenario) = std::env::var("ENTRA_CREATE_TEST_SCENARIO") else {
             return;
         };
-        let mut responses = vec![(201, r#"{"id":"object","appId":"client"}"#.into(), vec![])];
+        let mut responses = vec![
+            response(json!({"value":[]})),
+            (201, r#"{"id":"object","appId":"client"}"#.into(), vec![]),
+        ];
         if scenario == "patch-failure" {
             responses.push((403, "scope-denied".into(), vec![]));
         } else {
@@ -1209,7 +1292,9 @@ mod tests {
         let result = create(options(&["--name", "App", "--redirect-urls", "https://example.com/Callback,https://example.com/callback,https://example.com/Callback",
             "--audience", "PersonalMicrosoftAccount", "--scope-name", "read", "--scope-consent", "users", "--create-secret", "--secret-expiry", "90"]),
             &fixture.client(), Some("tenant")).await;
-        let requests = fixture.take_requests();
+        let all_requests = fixture.take_requests();
+        assert!(all_requests[0].starts_with("GET "));
+        let requests = &all_requests[1..];
         assert!(requests[0].starts_with("POST /v1.0/applications "));
         assert!(requests[1].starts_with("PATCH /v1.0/applications/object "));
         let body = |index: usize| -> Value {

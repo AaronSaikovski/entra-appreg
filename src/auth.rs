@@ -77,9 +77,14 @@ async fn current_tenant(executor: &dyn Executor) -> Result<String> {
     let output = executor
         .run(OsStr::new(program), &args)
         .await
-        .map_err(|_| anyhow!("Could not run Azure CLI to discover the active tenant."))?;
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => anyhow!("Azure CLI was not found. Install Azure CLI 2.54.0 or newer, then run 'az login'."),
+            _ => anyhow!("Could not run Azure CLI to check login status. Check your Azure CLI installation and run 'az account show'."),
+        })?;
     if !output.status.success() {
-        bail!("Azure CLI could not discover the active tenant.");
+        bail!(
+            "No usable Azure CLI login was found. Run 'az login' (or 'az login --tenant <tenant-id>'), then retry. If already signed in, check 'az account show'."
+        );
     }
     let tenant = std::str::from_utf8(&output.stdout)
         .map_err(|_| anyhow!("Azure CLI returned an invalid tenant ID; expected a UUID."))?;
@@ -96,11 +101,8 @@ async fn authenticate_with(
     deadline: Duration,
 ) -> Result<AuthContext> {
     tokio::time::timeout(deadline, async move {
-        let tenant_id = if command == Command::Create {
-            Some(current_tenant(executor.as_ref()).await?)
-        } else {
-            None
-        };
+        let active_tenant = current_tenant(executor.as_ref()).await?;
+        let tenant_id = (command == Command::Create).then_some(active_tenant);
         let credential = AzureCliCredential::new(Some(AzureCliCredentialOptions {
             tenant_id: tenant_id.clone(),
             executor: Some(executor),
@@ -112,7 +114,7 @@ async fn authenticate_with(
         let token = credential
             .get_token(&[GRAPH_SCOPE], None)
             .await
-            .map_err(|_| anyhow!("Azure CLI authentication failed; check your sign-in and use Azure CLI 2.54.0 or newer."))?;
+            .map_err(|_| anyhow!("Azure CLI has an account, but could not acquire a Microsoft Graph token. Your session may have expired or require reauthentication. Run 'az login' for the intended tenant, then retry; Azure CLI 2.54.0 or newer is required."))?;
         let access_token = token.token.secret();
         if access_token.trim().is_empty() {
             bail!("Azure CLI did not return a nonempty access token.");
@@ -247,17 +249,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn list_and_expose_use_active_cli_account_without_tenant_discovery() {
+    async fn non_create_commands_check_login_without_pinning_token_tenant() {
         for command in [Command::List, Command::ExposeApi, Command::Delete] {
-            let fixture = Arc::new(Fixture::new(vec![output(true, token_body(OPAQUE_TOKEN))]));
+            let fixture = Arc::new(Fixture::new(vec![
+                output(true, TENANT),
+                output(true, token_body(OPAQUE_TOKEN)),
+            ]));
             let context = authenticate_with(command, fixture.clone(), AUTH_TIMEOUT)
                 .await
                 .unwrap();
             assert_eq!(context.access_token, OPAQUE_TOKEN);
             assert_eq!(context.tenant_id, None);
             let calls = fixture.calls.lock();
-            assert_eq!(calls.len(), 1);
-            let token_command = calls[0].join(" ");
+            assert_eq!(calls.len(), 2);
+            let token_command = calls[1].join(" ");
             assert!(token_command.contains("account get-access-token"));
             assert!(token_command.contains(&format!("--scope {GRAPH_SCOPE}")));
             assert!(!token_command.contains("--tenant"));
@@ -296,13 +301,13 @@ mod tests {
             token_body(""),
             token_body(" \t\n"),
         ] {
-            let fixture = Arc::new(Fixture::new(vec![output(true, body)]));
+            let fixture = Arc::new(Fixture::new(vec![output(true, TENANT), output(true, body)]));
             let error = error_text(
                 authenticate_with(Command::List, fixture.clone(), AUTH_TIMEOUT).await,
             );
             assert!(!error.contains(PRIVATE_OUTPUT));
             assert!(!error.contains(OPAQUE_TOKEN));
-            assert_eq!(fixture.calls.lock().len(), 1);
+            assert_eq!(fixture.calls.lock().len(), 2);
         }
     }
 
@@ -326,11 +331,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn unavailable_login_stops_before_token_acquisition_for_every_command() {
+        for command in [
+            Command::Create,
+            Command::List,
+            Command::ExposeApi,
+            Command::Delete,
+        ] {
+            let fixture = Arc::new(Fixture::new(vec![output(false, PRIVATE_OUTPUT)]));
+            let error = error_text(authenticate_with(command, fixture.clone(), AUTH_TIMEOUT).await);
+            assert!(error.contains("az login"));
+            assert!(!error.contains(PRIVATE_OUTPUT));
+            assert_eq!(fixture.calls.lock().len(), 1);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn deadline_cancels_tenant_discovery_and_sdk_token_collection() {
         for (command, pending_call, outputs) in [
             (Command::Create, 1, vec![]),
             (Command::Create, 2, vec![output(true, TENANT)]),
             (Command::List, 1, vec![]),
+            (Command::List, 2, vec![output(true, TENANT)]),
         ] {
             let mut fixture = Fixture::new(outputs);
             fixture.pending_call = Some(pending_call);

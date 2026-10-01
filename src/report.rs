@@ -8,10 +8,13 @@ pub(crate) fn write_result_file(app_name: &str, contents: &str) -> io::Result<Pa
 
 fn write_result_file_in(directory: &Path, app_name: &str, contents: &str) -> io::Result<PathBuf> {
     let sanitized: String = app_name
+        .trim_matches([' ', '.'])
         .chars()
         .map(|character| {
             if illegal_filename_character(character) {
                 '_'
+            } else if character == ' ' {
+                '-'
             } else {
                 character
             }
@@ -91,6 +94,17 @@ mod tests {
     use std::fs::File;
     use std::io::BufWriter;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn spaces_become_hyphens_without_overwriting_existing_reports() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = write_result_file_in(directory.path(), "Test-App-Delete1", "original").unwrap();
+        let second = write_result_file_in(directory.path(), "Test App Delete1", "new").unwrap();
+        assert_eq!(first.file_name().unwrap(), "Test-App-Delete1.txt");
+        assert_eq!(second.file_name().unwrap(), "Test-App-Delete1-1.txt");
+        assert_eq!(fs::read_to_string(first).unwrap(), "original");
+        assert_eq!(fs::read_to_string(second).unwrap(), "new");
+    }
 
     #[test]
     fn occupied_file_and_directory_are_not_overwritten() {
