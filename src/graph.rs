@@ -30,7 +30,7 @@ impl GraphClient {
 
     // Offline construction seam: callers provide a no-redirect client with a timeout.
     // There is deliberately no command-line or environment endpoint override.
-    pub(crate) fn with_client(client: Client, mut base: Url) -> Result<Self> {
+    fn with_client(client: Client, mut base: Url) -> Result<Self> {
         let graph_origin = base.scheme() == "https"
             && base.host_str() == Some("graph.microsoft.com")
             && base.port_or_known_default() == Some(443);

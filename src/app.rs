@@ -52,29 +52,29 @@ pub(crate) async fn run_command(
     }
 }
 
-pub(crate) struct ScopeSpec {
-    pub(crate) name: String,
-    pub(crate) display_name: String,
-    pub(crate) description: String,
-    pub(crate) scope_type: &'static str,
-    pub(crate) user_display_name: Option<String>,
-    pub(crate) user_description: Option<String>,
-    pub(crate) enabled: bool,
+struct ScopeSpec {
+    name: String,
+    display_name: String,
+    description: String,
+    scope_type: &'static str,
+    user_display_name: Option<String>,
+    user_description: Option<String>,
+    enabled: bool,
 }
 impl ScopeSpec {
-    pub(crate) fn consent_label(&self) -> &'static str {
+    fn consent_label(&self) -> &'static str {
         if self.scope_type == "Admin" {
             "Admins only"
         } else {
             "Admins and users"
         }
     }
-    pub(crate) fn state_label(&self) -> &'static str {
+    fn state_label(&self) -> &'static str {
         if self.enabled { "Enabled" } else { "Disabled" }
     }
 }
 
-pub(crate) fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSpec, String> {
+fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSpec, String> {
     let raw_name = options.scope_name.as_deref().unwrap_or("");
     let name = raw_name.trim();
     if name.is_empty()
@@ -178,7 +178,7 @@ pub(crate) fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSp
     })
 }
 
-pub(crate) fn build_scope(id: &str, spec: &ScopeSpec) -> Value {
+fn build_scope(id: &str, spec: &ScopeSpec) -> Value {
     let mut scope = json!({"id": id, "value": spec.name, "type": spec.scope_type,
         "isEnabled": spec.enabled, "adminConsentDisplayName": spec.display_name,
         "adminConsentDescription": spec.description});
@@ -316,7 +316,7 @@ fn valid_redirect(uri: &str) -> bool {
     })
 }
 
-pub(crate) async fn create(
+async fn create(
     options: Options,
     graph: &GraphClient,
     tenant_id: Option<&str>,
@@ -585,7 +585,14 @@ async fn expose_api(options: Options, graph: &GraphClient) -> Result<(), AppErro
         }
     }
     let mut existing_uri = None;
-    if let Some(uris) = app.get("identifierUris").and_then(Value::as_array) {
+    let uris = match app.get("identifierUris") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(uris)) => Some(uris),
+        Some(_) => {
+            return Err(anyhow::anyhow!("Graph identifier URIs must be an array.").into());
+        }
+    };
+    if let Some(uris) = uris {
         for uri in uris {
             let uri = match uri {
                 Value::Null => continue,
@@ -1377,6 +1384,24 @@ mod tests {
         ] {
             let fixture = Fixture::new(vec![response(
                 json!({"id":"object", "appId":"client", "api":api}),
+            )]);
+            let result = expose_api(
+                options(&["expose-api", "--appid", "object", "--scope-name", "read"]),
+                &fixture.client(),
+            )
+            .await;
+            assert!(matches!(result, Err(AppError::Runtime(_))));
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("GET "));
+        }
+    }
+
+    #[tokio::test]
+    async fn expose_rejects_malformed_identifier_uri_collections_before_patch() {
+        for uris in [json!("api://existing"), json!({}), json!(42), json!(false)] {
+            let fixture = Fixture::new(vec![response(
+                json!({"id":"object", "appId":"client", "identifierUris":uris}),
             )]);
             let result = expose_api(
                 options(&["expose-api", "--appid", "object", "--scope-name", "read"]),

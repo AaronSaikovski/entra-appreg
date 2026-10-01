@@ -181,6 +181,21 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
         ("--secret-start", options.secret_start.is_some()),
         ("--secret-end", options.secret_end.is_some()),
     ];
+    let scope_options = [
+        ("--scope-name", options.scope_name.is_some()),
+        ("--scope-display-name", options.scope_display_name.is_some()),
+        ("--scope-description", options.scope_description.is_some()),
+        ("--scope-consent", options.scope_consent.is_some()),
+        (
+            "--scope-user-display-name",
+            options.scope_user_display_name.is_some(),
+        ),
+        (
+            "--scope-user-description",
+            options.scope_user_description.is_some(),
+        ),
+        ("--scope-state", options.scope_state.is_some()),
+    ];
     let list_options = [("--top", options.top.is_some()), ("--json", options.json)];
     if command == Command::Delete {
         if options.app_id.as_deref().is_none_or(|s| s == "no-id") {
@@ -190,21 +205,9 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
             ("--name", options.name.is_some()),
             ("--redirect-urls", options.redirects_supplied),
             ("--audience", options.audience.is_some()),
-            ("--scope-name", options.scope_name.is_some()),
-            ("--scope-display-name", options.scope_display_name.is_some()),
-            ("--scope-description", options.scope_description.is_some()),
-            ("--scope-consent", options.scope_consent.is_some()),
-            (
-                "--scope-user-display-name",
-                options.scope_user_display_name.is_some(),
-            ),
-            (
-                "--scope-user-description",
-                options.scope_user_description.is_some(),
-            ),
-            ("--scope-state", options.scope_state.is_some()),
         ]
         .into_iter()
+        .chain(scope_options)
         .chain(secret_options)
         .chain(list_options)
         .filter_map(|(name, supplied)| supplied.then_some(name))
@@ -249,21 +252,9 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
             ("--appid", options.app_id.is_some()),
             ("--redirect-urls", options.redirects_supplied),
             ("--audience", options.audience.is_some()),
-            ("--scope-name", options.scope_name.is_some()),
-            ("--scope-display-name", options.scope_display_name.is_some()),
-            ("--scope-description", options.scope_description.is_some()),
-            ("--scope-consent", options.scope_consent.is_some()),
-            (
-                "--scope-user-display-name",
-                options.scope_user_display_name.is_some(),
-            ),
-            (
-                "--scope-user-description",
-                options.scope_user_description.is_some(),
-            ),
-            ("--scope-state", options.scope_state.is_some()),
         ]
         .into_iter()
+        .chain(scope_options)
         .chain(secret_options)
         .filter_map(|(name, supplied)| supplied.then_some(name))
         .collect();

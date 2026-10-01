@@ -4,7 +4,13 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ## Unreleased
 
+### Review
+
+- Reviewed the current Rust codebase for modularity and correctness. Existing module split is sound; recommend narrower implementation visibility and shared scope-option membership rather than a framework or wholesale rewrite. Reproduced an outstanding expose-api defect: non-array `identifierUris` is treated as missing and replaced in a PATCH. All 54 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. Review only; production code unchanged, no live Azure calls.
+
 ### Fixed
+
+- Resolve all Rust review findings: reject malformed identifier URI collections before expose-api mutation, make scope helpers/create/Graph construction private, and share CLI scope-option membership across list/delete. Preserve missing/null URI behavior and deferred creation validation. Verification: all 55 tests and Rust quality/build gates passed on macOS; authentication-free CLI smoke passed, and an offline executable confirmed the malformed response now fails without PATCH. No live Azure calls made.
 
 - Replace spaces with hyphens in report filenames (for example, `Test App Delete1` becomes `Test-App-Delete1.txt`), retaining edge trimming, collision suffixes, and unchanged report contents. Verification: offline report-writing executable, all 54 tests, formatting, strict Clippy, compilation, and debug/release builds passed on macOS.
 

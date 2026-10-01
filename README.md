@@ -229,6 +229,8 @@ Application-read 403 errors name the delegated Graph permission `Application.Rea
 
 `src/main.rs` orchestrates a current-thread Tokio runtime. `cli.rs` parses via Clap and handles early exits; `auth.rs` uses Azure Identity SDK; `graph.rs` owns direct Graph REST transport; `app.rs` implements workflows, scope/lifetime helpers and list output; `report.rs` handles atomic reports. Requests are sequential. There is no service, Graph SDK, database, or DI container. See [AGENTS.md](AGENTS.md) for code conventions and assistant guidance.
 
+Rust modularity review fixes (2026-10-01): expose-api now rejects non-array `identifierUris` before PATCH; missing/null/array behavior is preserved. Scope implementation details and Graph client construction are private, and list/delete share scope-option membership. All 55 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. An offline production-workflow executable confirmed the previously reproduced malformed response now fails without PATCH. No live Azure calls were made; Windows/Linux behavior remains unverified.
+
 From the repository root:
 
 ```sh
