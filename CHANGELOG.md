@@ -41,6 +41,9 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- List now displays the authenticated tenant's name and ID from Graph `/organization`, including empty lists. JSON mode sends tenant details to stderr and preserves the stdout array contract. Organization lookup failures stop listing.
+  Verification: all 49 existing tests, rustfmt, strict all-target Clippy, cargo check, debug/release builds, and actual-binary list help passed on macOS. Offline production-workflow smoke covered text/JSON tenant output, empty results, organization 403, and malformed organization responses. No live Azure calls were made.
+
 - Add `delete --appid <object-or-client-id>` with an escaped target preview and mandatory terminal confirmation: only exact `yes` plus Enter authorizes deletion. Enter, refusal, or EOF cancels; pipes, redirected prompts, missing/blank/sentinel IDs, and unrelated options are rejected. No force bypass, retry, or report. Reuse 404-only lookup fallback and delete the resolved object ID; preserve Graph failure bodies.
 
 - Add read-only Rust CI on branch pushes, pull requests, and manual dispatch for Linux/macOS/Windows: rustfmt, strict Clippy, cargo check, locked build, unit tests, and real-process smoke/regressions. Actionlint and all commands passed locally on macOS, including 43 Rust tests and 21 CLI tests. Hosted execution and branch-protection configuration remain unverified; release publishing stays separate.

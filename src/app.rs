@@ -745,7 +745,22 @@ async fn collect_applications(
 }
 
 async fn list(options: Options, graph: &GraphClient) -> Result<(), AppError> {
+    let organization = graph
+        .get_url(&graph.url("/organization?$select=id,displayName")?)
+        .await?;
+    let tenants = organization
+        .get("value")
+        .and_then(Value::as_array)
+        .filter(|tenants| tenants.len() == 1)
+        .ok_or_else(|| anyhow::anyhow!("Graph must return exactly one tenant organization."))?;
+    let tenant_id = require_string(&tenants[0], "id")?;
+    let tenant_name = require_string(&tenants[0], "displayName")?;
     let (apps, more) = collect_applications(&options, graph).await?;
+    if options.json {
+        eprintln!("Tenant: {tenant_name:?}\nTenant ID: {tenant_id}");
+    } else {
+        println!("Tenant: {tenant_name:?}\nTenant ID: {tenant_id}\n");
+    }
     if options.json {
         let stdout = std::io::stdout();
         let mut output = stdout.lock();

@@ -530,6 +530,10 @@ OPTIONS
   --json
       Print a JSON array instead of a list, and nothing else on stdout,
       so the output can be piped to other tools.
+      Tenant name and ID are printed to stderr, preserving the JSON array.
+      Without --json, tenant details appear above the registrations.
+      Tenant details are read from Graph /organization using the same login.
+      A tenant lookup failure stops the command.
 
 HELP
   -h, --help

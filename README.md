@@ -150,6 +150,10 @@ entra-appreg list --top all --json
 - `--top <n|all>`: positive signed-32-bit count, default 50; `all` traverses pages up to that integer limit.
 - `--json`: pretty JSON array containing `displayName`, `appId`, and `id`, with no progress text on stdout.
 
+List displays the tenant display name and tenant ID above the registrations, including when no registrations match. These details come from Graph `/organization?$select=id,displayName` using the same authenticated client, not the Azure subscription name. With `--json`, tenant details go to stderr so stdout remains the existing JSON array. The tenant lookup adds one read request; authorization errors or malformed organization responses stop the command rather than display an unknown or potentially misleading tenant.
+
+Tenant-output verification: all 49 existing Rust tests and formatting, strict Clippy, compilation, and debug/release builds passed on macOS. An offline production-workflow smoke executable verified text and JSON output, empty lists, Graph 403, and malformed organization responses; temporary smoke code was removed. Live tenant authorization remains unverified.
+
 The tool collects the first matching records returned by Graph, then sorts by name. It does not ask Graph to sort before limiting. Truncation notices go to stderr in JSON mode. Pagination rejects foreign-origin links and repeated links. List never writes a report or changes tenant state; options for other commands are rejected.
 
 ### Delete a registration
