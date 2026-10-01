@@ -1,6 +1,6 @@
 # entra-appreg
 
-**Version 1.0.0** — a Rust CLI for Microsoft Entra ID single-page application registrations.
+**Version 1.0.1** — a Rust CLI for Microsoft Entra ID single-page application registrations.
 
 - **`create`** (default): create a SPA registration, optionally expose a scope and create a client secret, then save a report.
 - **`expose-api`**: add a scope to an existing registration while preserving existing API configuration.
