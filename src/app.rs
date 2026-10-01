@@ -40,32 +40,41 @@ pub(crate) async fn run_command(
         Command::Create => create(options, graph, tenant_id).await,
         Command::ExposeApi => expose_api(options, graph).await,
         Command::List => list(options, graph).await,
+        Command::Delete => {
+            delete(
+                options,
+                graph,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stderr().lock(),
+            )
+            .await
+        }
     }
 }
 
-pub(crate) struct ScopeSpec {
-    pub(crate) name: String,
-    pub(crate) display_name: String,
-    pub(crate) description: String,
-    pub(crate) scope_type: &'static str,
-    pub(crate) user_display_name: Option<String>,
-    pub(crate) user_description: Option<String>,
-    pub(crate) enabled: bool,
+struct ScopeSpec {
+    name: String,
+    display_name: String,
+    description: String,
+    scope_type: &'static str,
+    user_display_name: Option<String>,
+    user_description: Option<String>,
+    enabled: bool,
 }
 impl ScopeSpec {
-    pub(crate) fn consent_label(&self) -> &'static str {
+    fn consent_label(&self) -> &'static str {
         if self.scope_type == "Admin" {
             "Admins only"
         } else {
             "Admins and users"
         }
     }
-    pub(crate) fn state_label(&self) -> &'static str {
+    fn state_label(&self) -> &'static str {
         if self.enabled { "Enabled" } else { "Disabled" }
     }
 }
 
-pub(crate) fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSpec, String> {
+fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSpec, String> {
     let raw_name = options.scope_name.as_deref().unwrap_or("");
     let name = raw_name.trim();
     if name.is_empty()
@@ -169,7 +178,7 @@ pub(crate) fn resolve_scope(options: &Options, app_name: &str) -> Result<ScopeSp
     })
 }
 
-pub(crate) fn build_scope(id: &str, spec: &ScopeSpec) -> Value {
+fn build_scope(id: &str, spec: &ScopeSpec) -> Value {
     let mut scope = json!({"id": id, "value": spec.name, "type": spec.scope_type,
         "isEnabled": spec.enabled, "adminConsentDisplayName": spec.display_name,
         "adminConsentDescription": spec.description});
@@ -307,7 +316,7 @@ fn valid_redirect(uri: &str) -> bool {
     })
 }
 
-pub(crate) async fn create(
+async fn create(
     options: Options,
     graph: &GraphClient,
     tenant_id: Option<&str>,
@@ -351,11 +360,6 @@ pub(crate) async fn create(
                 audiences.join(", ")
             ))
         })?;
-    if options.redirect_uris.is_empty() {
-        return Err(AppError::Usage(
-            "--redirect-urls is required when creating an application.".into(),
-        ));
-    }
     let mut redirects = Vec::new();
     let mut seen = HashSet::new();
     for uri in &options.redirect_uris {
@@ -395,6 +399,41 @@ pub(crate) async fn create(
         None
     };
     let lifetime = resolve_lifetime(&options, Utc::now()).map_err(AppError::Usage)?;
+    let mut lookup = graph.url("/applications")?;
+    lookup
+        .query_pairs_mut()
+        .append_pair(
+            "$filter",
+            &format!("displayName eq '{}'", name.replace('\'', "''")),
+        )
+        .append_pair("$select", "id")
+        .append_pair("$top", "1");
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(lookup.clone()) {
+            return Err(anyhow::anyhow!("Graph returned a repeated name-check page.").into());
+        }
+        let page = graph.get_url(&lookup).await?;
+        let matches = page
+            .get("value")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("Graph returned an invalid name-check response."))?;
+        if !matches.is_empty() {
+            return Err(AppError::Usage(format!(
+                "An app registration named {name:?} already exists in this tenant. Choose a different --name, or use --appid to reference an existing registration."
+            )));
+        }
+        match page.get("@odata.nextLink") {
+            None | Some(Value::Null) => break,
+            Some(Value::String(link)) => lookup = graph.validate_next_link(link)?,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Graph returned an invalid name-check next-page link."
+                )
+                .into());
+            }
+        }
+    }
     println!("Creating application registration '{name}'");
     println!("  Supported account types: {audience}");
     for uri in &redirects {
@@ -546,7 +585,14 @@ async fn expose_api(options: Options, graph: &GraphClient) -> Result<(), AppErro
         }
     }
     let mut existing_uri = None;
-    if let Some(uris) = app.get("identifierUris").and_then(Value::as_array) {
+    let uris = match app.get("identifierUris") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(uris)) => Some(uris),
+        Some(_) => {
+            return Err(anyhow::anyhow!("Graph identifier URIs must be an array.").into());
+        }
+    };
+    if let Some(uris) = uris {
         for uri in uris {
             let uri = match uri {
                 Value::Null => continue,
@@ -592,6 +638,54 @@ async fn expose_api(options: Options, graph: &GraphClient) -> Result<(), AppErro
     println!("Scope ID:           {scope_id}");
     println!("Scope consent:      {}", spec.consent_label());
     println!("Scope state:        {}", spec.state_label());
+    Ok(())
+}
+
+async fn delete(
+    options: Options,
+    graph: &GraphClient,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<(), AppError> {
+    use anyhow::Context as _;
+
+    let reference = options
+        .app_id
+        .as_deref()
+        .ok_or_else(|| AppError::Usage("delete requires --appid.".into()))?;
+    let app = graph
+        .get_application(reference)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Application not found: {reference}"))?;
+    let object_id = require_string(&app, "id")?;
+    let client_id = require_string(&app, "appId")?;
+    let name = optional_string(&app, "displayName", "(unnamed)")?;
+    // Quote remote fields so terminal control characters cannot disguise the target.
+    writeln!(
+        output,
+        "Delete this app registration?\n  Name: {name:?}\n  Object ID: {object_id:?}\n  Application (client) ID: {client_id:?}\nDeletion can interrupt applications using this registration."
+    )
+    .context("Could not display deletion target")?;
+    write!(output, "Type 'yes' to delete; any other answer cancels: ")
+        .context("Could not display deletion prompt")?;
+    output.flush().context("Could not flush deletion prompt")?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .context("Could not read deletion confirmation; nothing was deleted")?;
+    if !matches!(answer.as_str(), "yes\n" | "yes\r\n") {
+        writeln!(output, "Deletion cancelled. Nothing was deleted.")
+            .context("Could not display deletion cancellation")?;
+        return Ok(());
+    }
+    graph
+        .delete(&format!("/applications/{}", encode(object_id)))
+        .await?;
+    writeln!(
+        output,
+        "Deleted application {object_id:?} (Application (client) ID: {client_id:?})."
+    )
+    .context("Application was deleted, but could not display completion")?;
     Ok(())
 }
 
@@ -688,7 +782,22 @@ async fn collect_applications(
 }
 
 async fn list(options: Options, graph: &GraphClient) -> Result<(), AppError> {
+    let organization = graph
+        .get_url(&graph.url("/organization?$select=id,displayName")?)
+        .await?;
+    let tenants = organization
+        .get("value")
+        .and_then(Value::as_array)
+        .filter(|tenants| tenants.len() == 1)
+        .ok_or_else(|| anyhow::anyhow!("Graph must return exactly one tenant organization."))?;
+    let tenant_id = require_string(&tenants[0], "id")?;
+    let tenant_name = require_string(&tenants[0], "displayName")?;
     let (apps, more) = collect_applications(&options, graph).await?;
+    if options.json {
+        eprintln!("Tenant: {tenant_name:?}\nTenant ID: {tenant_id}");
+    } else {
+        println!("Tenant: {tenant_name:?}\nTenant ID: {tenant_id}\n");
+    }
     if options.json {
         let stdout = std::io::stdout();
         let mut output = stdout.lock();
@@ -713,7 +822,7 @@ async fn list(options: Options, graph: &GraphClient) -> Result<(), AppError> {
         let indent = " ".repeat(width + 2);
         for (index, app) in apps.iter().enumerate() {
             println!("{:>width$}. {}", index + 1, app.name);
-            println!("{indent}Client ID: {}", app.client_id);
+            println!("{indent}Application (client) ID: {}", app.client_id);
             println!("{indent}Object ID: {}", app.id);
         }
         println!();
@@ -742,6 +851,166 @@ mod tests {
             Invocation::Run(options) => options,
             _ => panic!("expected command"),
         }
+    }
+
+    #[tokio::test]
+    async fn delete_requires_complete_explicit_confirmation() {
+        for answer in ["", "\n", "no\n", "y\n", "YES\n", " yes\n", "yes", "yes \n"] {
+            let fixture = Fixture::new(vec![response(
+                json!({"id":"object", "appId":"client", "displayName":"App"}),
+            )]);
+            let mut output = Vec::new();
+            delete(
+                options(&["delete", "--appid", "object"]),
+                &fixture.client(),
+                &mut answer.as_bytes(),
+                &mut output,
+            )
+            .await
+            .unwrap();
+            assert_eq!(fixture.take_requests().len(), 1, "{answer:?}");
+            assert!(
+                String::from_utf8(output)
+                    .unwrap()
+                    .contains("Nothing was deleted.")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_confirms_resolved_target_and_uses_object_id_after_fallback() {
+        for answer in ["yes\n", "yes\r\n"] {
+            let fixture = Fixture::new(vec![
+                (404, "missing".into(), vec![]),
+                response(
+                    json!({"id":"object/id", "appId":"client", "displayName":"App\n\u{1b}[2J"}),
+                ),
+                (204, String::new(), vec![]),
+            ]);
+            let mut output = Vec::new();
+            delete(
+                options(&["delete", "--appid", "client"]),
+                &fixture.client(),
+                &mut answer.as_bytes(),
+                &mut output,
+            )
+            .await
+            .unwrap();
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 3);
+            assert!(requests[2].starts_with("DELETE /v1.0/applications/object%2Fid "));
+            assert_eq!(requests[2].split_once("\r\n\r\n").unwrap().1, "");
+            let output = String::from_utf8(output).unwrap();
+            let (target, _) = output.split_once("Type 'yes'").unwrap();
+            assert!(target.contains("Object ID: \"object/id\""));
+            assert!(target.contains(r#"Name: "App\n\u{1b}[2J""#));
+            assert!(!target.contains('\u{1b}'));
+            assert!(output.contains("Deleted application"));
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_stops_before_confirmation_on_missing_or_invalid_lookup() {
+        for (responses, expected_requests) in [
+            (
+                vec![
+                    (404, "missing".into(), vec![]),
+                    (404, "missing".into(), vec![]),
+                ],
+                2,
+            ),
+            (vec![(403, "denied".into(), vec![])], 1),
+            (vec![response(json!({"id":"object"}))], 1),
+            (
+                vec![response(
+                    json!({"id":"object", "appId":"client", "displayName":42}),
+                )],
+                1,
+            ),
+        ] {
+            let fixture = Fixture::new(responses);
+            let mut output = Vec::new();
+            assert!(
+                delete(
+                    options(&["delete", "--appid", "client"]),
+                    &fixture.client(),
+                    &mut b"yes\n".as_slice(),
+                    &mut output,
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(fixture.take_requests().len(), expected_requests);
+            assert!(output.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_reports_graph_failure_without_retry_or_success() {
+        for status in [403, 404, 500] {
+            let fixture = Fixture::new(vec![
+                response(json!({"id":"object", "appId":"client"})),
+                (status, "delete-failed".into(), vec![]),
+            ]);
+            let mut output = Vec::new();
+            let error = delete(
+                options(&["delete", "--appid", "object"]),
+                &fixture.client(),
+                &mut b"yes\n".as_slice(),
+                &mut output,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("HTTP {status}: delete-failed"))
+            );
+            assert_eq!(fixture.take_requests().len(), 2);
+            assert!(
+                !String::from_utf8(output)
+                    .unwrap()
+                    .contains("Deleted application")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_does_not_mutate_when_confirmation_io_fails() {
+        struct Unflushable;
+        impl std::io::Write for Unflushable {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("flush failed"))
+            }
+        }
+        let fixture = Fixture::new(vec![
+            response(json!({"id":"object", "appId":"client"})),
+            response(json!({"id":"object", "appId":"client"})),
+        ]);
+        let error = delete(
+            options(&["delete", "--appid", "object"]),
+            &fixture.client(),
+            &mut b"yes\n".as_slice(),
+            &mut Unflushable,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("flush deletion prompt"));
+        let error = delete(
+            options(&["delete", "--appid", "object"]),
+            &fixture.client(),
+            &mut b"\xff\n".as_slice(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("read deletion confirmation"));
+        let requests = fixture.take_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|request| request.starts_with("GET ")));
     }
 
     #[test]
@@ -955,13 +1224,67 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn create_without_redirects_sends_empty_redirect_list() {
+        let fixture = Fixture::new(vec![
+            response(json!({"value":[]})),
+            (403, "creation-denied".into(), vec![]),
+        ]);
+        let error = create(
+            options(&["--name", "App"]),
+            &fixture.client(),
+            Some("tenant"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("creation-denied"));
+        let requests = fixture.take_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].starts_with("POST /v1.0/applications "));
+        let body: Value =
+            serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["spa"]["redirectUris"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn create_blocks_duplicate_names_and_failed_checks() {
+        for reply in [
+            response(json!({"value":[{"id":"existing"}]})),
+            response(json!({})),
+            (403, "lookup-denied".into(), vec![]),
+        ] {
+            let fixture = Fixture::new(vec![reply]);
+            assert!(
+                create(
+                    options(&["--name", "O'Brien & Co"]),
+                    &fixture.client(),
+                    Some("tenant")
+                )
+                .await
+                .is_err()
+            );
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("GET "));
+            let path = requests[0].split_whitespace().nth(1).unwrap();
+            let url = url::Url::parse(&format!("http://fixture{path}")).unwrap();
+            assert!(
+                url.query_pairs()
+                    .any(|(key, value)| key == "$filter"
+                        && value == "displayName eq 'O''Brien & Co'")
+            );
+        }
+    }
 
     #[tokio::test]
     async fn create_workflow_child() {
         let Ok(scenario) = std::env::var("ENTRA_CREATE_TEST_SCENARIO") else {
             return;
         };
-        let mut responses = vec![(201, r#"{"id":"object","appId":"client"}"#.into(), vec![])];
+        let mut responses = vec![
+            response(json!({"value":[]})),
+            (201, r#"{"id":"object","appId":"client"}"#.into(), vec![]),
+        ];
         if scenario == "patch-failure" {
             responses.push((403, "scope-denied".into(), vec![]));
         } else {
@@ -976,7 +1299,9 @@ mod tests {
         let result = create(options(&["--name", "App", "--redirect-urls", "https://example.com/Callback,https://example.com/callback,https://example.com/Callback",
             "--audience", "PersonalMicrosoftAccount", "--scope-name", "read", "--scope-consent", "users", "--create-secret", "--secret-expiry", "90"]),
             &fixture.client(), Some("tenant")).await;
-        let requests = fixture.take_requests();
+        let all_requests = fixture.take_requests();
+        assert!(all_requests[0].starts_with("GET "));
+        let requests = &all_requests[1..];
         assert!(requests[0].starts_with("POST /v1.0/applications "));
         assert!(requests[1].starts_with("PATCH /v1.0/applications/object "));
         let body = |index: usize| -> Value {
@@ -1059,6 +1384,24 @@ mod tests {
         ] {
             let fixture = Fixture::new(vec![response(
                 json!({"id":"object", "appId":"client", "api":api}),
+            )]);
+            let result = expose_api(
+                options(&["expose-api", "--appid", "object", "--scope-name", "read"]),
+                &fixture.client(),
+            )
+            .await;
+            assert!(matches!(result, Err(AppError::Runtime(_))));
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("GET "));
+        }
+    }
+
+    #[tokio::test]
+    async fn expose_rejects_malformed_identifier_uri_collections_before_patch() {
+        for uris in [json!("api://existing"), json!({}), json!(42), json!(false)] {
+            let fixture = Fixture::new(vec![response(
+                json!({"id":"object", "appId":"client", "identifierUris":uris}),
             )]);
             let result = expose_api(
                 options(&["expose-api", "--appid", "object", "--scope-name", "read"]),

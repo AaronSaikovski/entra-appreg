@@ -5,6 +5,7 @@ pub(crate) enum Command {
     Create,
     ExposeApi,
     List,
+    Delete,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub(crate) enum HelpTopic {
     Create,
     ExposeApi,
     List,
+    Delete,
 }
 
 #[expect(
@@ -105,17 +107,19 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
                     "create" => Ok(Invocation::Help(HelpTopic::Create)),
                     "expose-api" => Ok(Invocation::Help(HelpTopic::ExposeApi)),
                     "list" => Ok(Invocation::Help(HelpTopic::List)),
+                    "delete" => Ok(Invocation::Help(HelpTopic::Delete)),
                     topic => Err(format!(
-                        "No help for '{topic}'. Try: help, help create, help expose-api, help list."
+                        "No help for '{topic}'. Try: help, help create, help expose-api, help list, help delete."
                     )),
                 };
             }
             "create" => Command::Create,
             "expose-api" => Command::ExposeApi,
             "list" => Command::List,
+            "delete" => Command::Delete,
             _ => {
                 return Err(format!(
-                    "Unknown command: {word}. Use 'create', 'expose-api', 'list' or 'help' (see --help)."
+                    "Unknown command: {word}. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help)."
                 ));
             }
         };
@@ -134,6 +138,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
                 Command::Create => HelpTopic::Create,
                 Command::ExposeApi => HelpTopic::ExposeApi,
                 Command::List => HelpTopic::List,
+                Command::Delete => HelpTopic::Delete,
             }
         }));
     }
@@ -176,7 +181,44 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
         ("--secret-start", options.secret_start.is_some()),
         ("--secret-end", options.secret_end.is_some()),
     ];
+    let scope_options = [
+        ("--scope-name", options.scope_name.is_some()),
+        ("--scope-display-name", options.scope_display_name.is_some()),
+        ("--scope-description", options.scope_description.is_some()),
+        ("--scope-consent", options.scope_consent.is_some()),
+        (
+            "--scope-user-display-name",
+            options.scope_user_display_name.is_some(),
+        ),
+        (
+            "--scope-user-description",
+            options.scope_user_description.is_some(),
+        ),
+        ("--scope-state", options.scope_state.is_some()),
+    ];
     let list_options = [("--top", options.top.is_some()), ("--json", options.json)];
+    if command == Command::Delete {
+        if options.app_id.as_deref().is_none_or(|s| s == "no-id") {
+            return Err("delete requires --appid <application object id or client id>.".into());
+        }
+        let forbidden: Vec<_> = [
+            ("--name", options.name.is_some()),
+            ("--redirect-urls", options.redirects_supplied),
+            ("--audience", options.audience.is_some()),
+        ]
+        .into_iter()
+        .chain(scope_options)
+        .chain(secret_options)
+        .chain(list_options)
+        .filter_map(|(name, supplied)| supplied.then_some(name))
+        .collect();
+        if !forbidden.is_empty() {
+            return Err(format!(
+                "{} can't be used with the delete command.",
+                forbidden.join(", ")
+            ));
+        }
+    }
     if command == Command::ExposeApi {
         if options.app_id.as_deref().is_none_or(|s| s == "no-id") {
             return Err("expose-api requires --appid <application object id or client id>.".into());
@@ -210,21 +252,9 @@ pub(crate) fn parse(args: &[String]) -> Result<Invocation, String> {
             ("--appid", options.app_id.is_some()),
             ("--redirect-urls", options.redirects_supplied),
             ("--audience", options.audience.is_some()),
-            ("--scope-name", options.scope_name.is_some()),
-            ("--scope-display-name", options.scope_display_name.is_some()),
-            ("--scope-description", options.scope_description.is_some()),
-            ("--scope-consent", options.scope_consent.is_some()),
-            (
-                "--scope-user-display-name",
-                options.scope_user_display_name.is_some(),
-            ),
-            (
-                "--scope-user-description",
-                options.scope_user_description.is_some(),
-            ),
-            ("--scope-state", options.scope_state.is_some()),
         ]
         .into_iter()
+        .chain(scope_options)
         .chain(secret_options)
         .filter_map(|(name, supplied)| supplied.then_some(name))
         .collect();
@@ -273,6 +303,7 @@ pub(crate) fn show_help(topic: HelpTopic) {
             HelpTopic::Create => CREATE_HELP,
             HelpTopic::ExposeApi => EXPOSE_HELP,
             HelpTopic::List => LIST_HELP,
+            HelpTopic::Delete => DELETE_HELP,
         }
     );
 }
@@ -290,6 +321,7 @@ COMMANDS
   create           (default) Create an app registration. The word can be omitted.
   expose-api       Add an API scope to an app that already exists.
   list             List the app registrations in the tenant (read-only).
+  delete           Delete an existing app registration after confirmation.
   help [command]   Show help, for example: help expose-api
 
 OPTIONS BY COMMAND
@@ -302,19 +334,21 @@ OPTIONS BY COMMAND
                --scope-consent  --scope-user-display-name  --scope-user-description
                --scope-state
   list         --name  --top  --json
+  delete       --appid
 
 HELP
   -h, --help       Show help. Add it after a command to see that command's options:
                      cargo run -- create --help
                      cargo run -- expose-api --help
                      cargo run -- list --help
+                     cargo run -- delete --help
   --version        Show the version and exit.
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
   Uses the official Azure Identity AzureCliCredential with your current
-  Azure CLI login. Create discovers and pins the current tenant; list
-  and expose-api use the active Azure CLI context.
+  Azure CLI login. Create discovers and pins the current tenant; list,
+  expose-api, and delete use the active Azure CLI context.
   Your account needs permission for the requested operation. No
   AZURE_* client-secret settings are required. Help/version need no login.
 
@@ -332,7 +366,7 @@ EXAMPLES
 const CREATE_HELP: &str = r#"create - create a new app registration (the default command)
 
 USAGE
-  cargo run -- [create] --name <text> --redirect-urls <list> [options]
+  cargo run -- [create] --name <text> [--redirect-urls <list>] [options]
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
@@ -344,19 +378,23 @@ REQUIRED (when a new app is created)
   --name <text>
       Display name of the app registration. Also names the output file and
       the secret description.
+
+OPTIONS
   --redirect-urls <list>
-      Full redirect URIs for the SPA, comma-separated. Surrounding whitespace
+      Optional; defaults to no redirect URIs. Full redirect URIs for the SPA,
+      comma-separated. Surrounding whitespace
       and exact repeats are removed; path case and trailing slashes are
       preserved. Can be repeated. Alias: --redirect-url. For example:
       "http://localhost:5173/auth/callback,https://myapp.example.com/auth/callback"
 
-OPTIONS
   --audience <value>
       Supported account types. Case-insensitive. Default: AzureADMyOrg
       One of: AzureADMyOrg, AzureADMultipleOrgs, AzureADandPersonalMicrosoftAccount, PersonalMicrosoftAccount
   --appid <id>
       An existing app registration, by object ID or client ID. If it exists,
       nothing is created. An explicitly blank ID is rejected.
+      New registrations are rejected if Graph finds the same display name.
+      This check requires Graph read access and cannot prevent concurrent creates.
 
 EXPOSE AN API (optional)
   --scope-name <value>
@@ -487,6 +525,10 @@ OPTIONS
   --json
       Print a JSON array instead of a list, and nothing else on stdout,
       so the output can be piped to other tools.
+      Tenant name and ID are printed to stderr, preserving the JSON array.
+      Without --json, tenant details appear above the registrations.
+      Tenant details are read from Graph /organization using the same login.
+      A tenant lookup failure stops the command.
 
 HELP
   -h, --help
@@ -494,7 +536,7 @@ HELP
 
 OUTPUT
   A numbered list sorted by name. Each app shows its name, then its
-  Client ID and Object ID. Either ID works with "--appid" for both
+  Application (client) ID and Object ID. Either ID works with "--appid" for both
   "expose-api" and "create".
   Exit codes: 0 success, 1 failure (for example no permission to read
   app registrations), 2 bad arguments.
@@ -513,6 +555,35 @@ EXAMPLES
   cargo run -- list --top all
   cargo run -- list --json"#;
 
+const DELETE_HELP: &str = r#"delete - delete an existing app registration after confirmation
+
+USAGE
+  entra-appreg delete --appid <id>
+  cargo run -- delete --appid <id>
+
+OPTIONS
+  --appid <id>     Required application object ID or client ID; not a name.
+  -h, --help      Show this help without authentication.
+  --version       Show the version and exit.
+
+CONFIRMATION
+  Requires terminal input and terminal stderr; pipes and redirected prompts
+  are rejected before authentication. There is no --yes or force option.
+  Shows the resolved display name, object ID, and client ID, then asks you
+  to type exactly 'yes'. Enter, any other answer, or EOF cancels without
+  deleting anything (exit 0).
+
+BEHAVIOR
+  Uses the active az login context. Check the selected tenant first.
+  Only a lookup 404 permits fallback from object ID to client ID.
+  A missing app or Graph failure exits 1; invalid arguments exit 2.
+  Deletes only the resolved application object, with no retry or report.
+  Deletion can interrupt applications using this registration.
+  Graph soft-deletes applications; restoration is not provided by this CLI.
+
+EXAMPLE
+  cargo run -- delete --appid <id>"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +597,59 @@ mod tests {
             Invocation::Run(options) => options,
             other => panic!("Expected a command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn delete_requires_id_and_rejects_unrelated_options() {
+        assert_eq!(run(&["DeLeTe", "--appid", "id"]).command, Command::Delete);
+        for args in [
+            &["delete"][..],
+            &["delete", "--appid"],
+            &["delete", "--appid", ""],
+            &["delete", "--appid", " "],
+            &["delete", "--appid", "no-id"],
+            &["delete", "--appid", "id", "--yes"],
+            &["delete", "--appid", "id", "--force"],
+        ] {
+            assert!(parse_words(args).is_err(), "{args:?}");
+        }
+        for option in [
+            "--name",
+            "--redirect-url",
+            "--redirect-urls",
+            "--audience",
+            "--scope-name",
+            "--scope-display-name",
+            "--scope-description",
+            "--scope-consent",
+            "--scope-user-display-name",
+            "--scope-user-description",
+            "--scope-state",
+            "--top",
+            "--secret-expiry",
+            "--secret-start",
+            "--secret-end",
+        ] {
+            assert!(
+                parse_words(&["delete", "--appid", "id", option, ""]).is_err(),
+                "{option}"
+            );
+        }
+        for option in ["--json", "--create-secret"] {
+            assert!(parse_words(&["delete", "--appid", "id", option]).is_err());
+        }
+        assert!(matches!(
+            parse_words(&["delete", "--help"]),
+            Ok(Invocation::Help(HelpTopic::Delete))
+        ));
+        assert!(matches!(
+            parse_words(&["help", "delete"]),
+            Ok(Invocation::Help(HelpTopic::Delete))
+        ));
+        assert!(matches!(
+            parse_words(&["delete", "--help", "--version"]),
+            Ok(Invocation::Version)
+        ));
     }
 
     #[test]

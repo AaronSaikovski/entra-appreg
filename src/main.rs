@@ -5,7 +5,7 @@ mod graph;
 mod report;
 
 use cli::{HelpTopic, Invocation};
-use std::process::ExitCode;
+use std::{io::IsTerminal, process::ExitCode};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -30,17 +30,18 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if options.command == cli::Command::Delete
+        && !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal())
+    {
+        eprintln!(
+            "delete requires terminal input and terminal stderr for confirmation; nothing was deleted."
+        );
+        return ExitCode::from(2);
+    }
     let auth = match auth::authenticate(options.command).await {
         Ok(auth) => auth,
         Err(error) => {
-            eprintln!("Could not get an access token to call Microsoft Graph.");
-            eprintln!(
-                "Install Azure CLI 2.54.0 or newer and sign in with 'az login' before running this command."
-            );
-            eprintln!(
-                "Ensure the signed-in account has access to the intended tenant and the required Microsoft Graph permissions."
-            );
-            eprintln!("Details: {error:#}");
+            eprintln!("Authentication failed: {error:#}");
             return ExitCode::from(1);
         }
     };

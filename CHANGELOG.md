@@ -4,7 +4,24 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ## Unreleased
 
+### Review
+
+- Reviewed the current Rust codebase for modularity and correctness. Existing module split is sound; recommend narrower implementation visibility and shared scope-option membership rather than a framework or wholesale rewrite. Reproduced an outstanding expose-api defect: non-array `identifierUris` is treated as missing and replaced in a PATCH. All 54 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. Review only; production code unchanged, no live Azure calls.
+
 ### Fixed
+
+- Resolve all Rust review findings: reject malformed identifier URI collections before expose-api mutation, make scope helpers/create/Graph construction private, and share CLI scope-option membership across list/delete. Preserve missing/null URI behavior and deferred creation validation. Verification: all 55 tests and Rust quality/build gates passed on macOS; authentication-free CLI smoke passed, and an offline executable confirmed the malformed response now fails without PATCH. No live Azure calls made.
+
+- Replace spaces with hyphens in report filenames (for example, `Test App Delete1` becomes `Test-App-Delete1.txt`), retaining edge trimming, collision suffixes, and unchanged report contents. Verification: offline report-writing executable, all 54 tests, formatting, strict Clippy, compilation, and debug/release builds passed on macOS.
+
+- Block creation when a preflight Graph `displayName eq` lookup finds an existing registration; escape OData names, follow validated pagination, reject cycles/malformed responses, and stop on lookup errors. Existing `--appid` no-ops are preserved. This requires Graph read access and cannot guarantee uniqueness across concurrent creates or delayed directory visibility.
+- Use `Application (client) ID` in list/delete console output, matching the report-file label; preserve `AUTH_CLIENT_ID` and JSON contracts. Verification: all 53 tests, formatting, strict Clippy, compilation, debug/release builds, offline duplicate-rejection executable, and actual-binary create/list help passed on macOS. No live tenant calls made.
+
+- Make create's `--redirect-urls` / `--redirect-url` optional, defaulting to an empty SPA redirect URI list while retaining validation of supplied URIs. Update CLI help and README. Verification: all 52 tests, including an offline empty-redirect POST regression, formatting, strict Clippy, compilation, debug/release builds, and actual-binary create help passed on macOS. No live tenant creation performed.
+
+- Name delegated `Application.Read.All` and Azure CLI admin consent in application-read 403 diagnostics, explain user directory read access and Directory Readers, and distinguish Entra access from Azure subscription roles. Keep read-permission advice off write failures. Verification: offline production-client GET/POST 403 smoke, all 51 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. No live tenant operations performed.
+
+- Make Graph HTTP 403 errors lead with a plain-English access-denied explanation, Azure CLI account/tenant checks, and administrator guidance for Graph consent, directory roles, and ownership. Preserve the complete original response under technical details; no retries or lookup fallback are added. Verification on macOS: all 51 tests, rustfmt, strict Clippy, compilation, debug/release builds, authentication-free CLI smoke, and an offline production-client 403 replay passed. Live tenant and Windows/Linux behavior remain unverified.
 
 - Rust: detect repeated Graph pagination links instead of looping on empty cyclic pages; retain the next-link origin restriction and reject redirects.
 - Rust: cap secret descriptions at 128 UTF-16 units without splitting a Unicode scalar. The additive port leaves C# unchanged.
@@ -41,6 +58,13 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- Check Azure CLI account availability before token acquisition for every authenticated command. Provide actionable, secret-safe guidance for unavailable login, missing CLI executable, and token acquisition failure after a successful account check. Preserve create-only tenant pinning, the overall ten-second deadline, JSON stdout isolation, and login-free help/version. Verification: all 50 tests and Rust quality/build gates passed on macOS; actual-binary fake-CLI smoke covered signed-out, missing CLI, token failure, and help/version. No live Azure session was changed.
+
+- List now displays the authenticated tenant's name and ID from Graph `/organization`, including empty lists. JSON mode sends tenant details to stderr and preserves the stdout array contract. Organization lookup failures stop listing.
+  Verification: all 49 existing tests, rustfmt, strict all-target Clippy, cargo check, debug/release builds, and actual-binary list help passed on macOS. Offline production-workflow smoke covered text/JSON tenant output, empty results, organization 403, and malformed organization responses. No live Azure calls were made.
+
+- Add `delete --appid <object-or-client-id>` with an escaped target preview and mandatory terminal confirmation: only exact `yes` plus Enter authorizes deletion. Enter, refusal, or EOF cancels; pipes, redirected prompts, missing/blank/sentinel IDs, and unrelated options are rejected. No force bypass, retry, or report. Reuse 404-only lookup fallback and delete the resolved object ID; preserve Graph failure bodies.
+
 - Add read-only Rust CI on branch pushes, pull requests, and manual dispatch for Linux/macOS/Windows: rustfmt, strict Clippy, cargo check, locked build, unit tests, and real-process smoke/regressions. Actionlint and all commands passed locally on macOS, including 43 Rust tests and 21 CLI tests. Hosted execution and branch-protection configuration remain unverified; release publishing stays separate.
 
 - Tag-triggered GitHub Actions release workflow for Rust binaries on Linux x64/ARM64, macOS Intel/Apple Silicon, and Windows x64. Native jobs gate publication on formatting, strict Clippy, unit/process tests, version/help smoke, and locked release builds. Publish archives with README/license and SHA-256 checksums using a least-privilege release job and commit-pinned actions. Require tags to match the package and binary version; mark prerelease versions accordingly.
@@ -53,6 +77,8 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 - Mandatory documentation closeout after every review or change: update README guidance/status and this changelog before reporting completion; the rule is recorded in `AGENTS.md`.
 
 ### Verification
+
+- Confirmed deletion: rustfmt, strict all-target Clippy, locked cargo check, debug/release builds, and all 49 Rust tests passed on macOS. Real-binary smoke covered authentication-free help/validation and rejection of piped input/redirected stderr. A temporary production-workflow executable with a loopback Graph fixture passed five terminal scenarios: confirmed deletion after client-ID fallback, refusal, Enter, EOF, and HTTP 403 propagation. Tests additionally cover incomplete confirmation, malformed/missing lookup results, confirmation I/O failures, escaping, and no retry on delete errors. README/help/repository guidance updated; no live tenant operation occurred. Linux/Windows terminal behavior and live authorization remain unverified.
 
 - Root Cargo layout verification: root-level formatting, strict Clippy, compilation checking, debug/ARM64 release builds, all 43 Rust tests, and actionlint passed. Executed both migrated workflow smoke scripts and the root-manifest tag guard. Tested migrated packaging paths, archive contents/checksums, Unix executable permissions, and extracted binary version; ZIP used a fixture, not Windows execution. Confirmed root target output is ignored and lock/source/workflows remain trackable. No active old package paths remain in source, workflows, README, AGENTS.md, or ignore rules. Hosted publication/platform and live-tenant limits are unchanged.
 - Rust-only documentation/workflow verification: four parallel read-only research agents supplied source, tests, configuration, and documentation findings. Confirmed root AGENTS.md has the requested title/eight sections and current guidance/workflows contain no removed implementation/test commands. On macOS, actionlint for both workflows, rustfmt, strict Clippy, cargo check, debug and ARM64 release builds, and all 43 Rust tests passed. Executed both workflows' actual binary-smoke scripts; invalid top and blank app ID returned exit 2. Hosted matrix/publication and live Graph behavior remain unverified. Subsequent bullets retain historical verification, including the now-removed Python suite.

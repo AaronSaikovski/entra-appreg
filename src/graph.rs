@@ -30,7 +30,7 @@ impl GraphClient {
 
     // Offline construction seam: callers provide a no-redirect client with a timeout.
     // There is deliberately no command-line or environment endpoint override.
-    pub(crate) fn with_client(client: Client, mut base: Url) -> Result<Self> {
+    fn with_client(client: Client, mut base: Url) -> Result<Self> {
         let graph_origin = base.scheme() == "https"
             && base.host_str() == Some("graph.microsoft.com")
             && base.port_or_known_default() == Some(443);
@@ -102,6 +102,30 @@ impl GraphClient {
             )
         })?;
         if !status.is_success() {
+            if status == StatusCode::FORBIDDEN {
+                let permission = if method == Method::GET && path.starts_with("/v1.0/applications")
+                {
+                    "Reading app registrations requires the delegated Microsoft Graph permission \
+                     `Application.Read.All` (or a sufficient broader permission), with admin consent \
+                     for the calling client, Azure CLI, not the target app registration. Your user \
+                     also needs directory read access: default member permissions can suffice; \
+                     Directory Readers is a supported read-only role. Azure subscription \
+                     Owner/Contributor roles do not grant this access.\n"
+                } else {
+                    ""
+                };
+                bail!(
+                    "Microsoft Graph denied access (HTTP 403). Your signed-in Azure CLI account \
+                     does not have permission to perform this operation in the selected tenant.\n\
+                     {permission}Check the account and tenant with `az account show`. If they are incorrect, \
+                     sign in to the intended tenant with `az login --tenant <tenant-id>`.\n\
+                     If they are correct, ask your Microsoft Entra administrator to check the \
+                     Microsoft Graph permissions and admin consent for Azure CLI, and your \
+                     account's directory roles or app ownership. Signing in again alone does not \
+                     grant permissions.\n\
+                     Technical details: {method} {path} failed with HTTP 403: {body}"
+                );
+            }
             bail!(
                 "{method} {path} failed with HTTP {}: {body}",
                 status.as_u16()
@@ -153,6 +177,12 @@ impl GraphClient {
             .request(Method::PATCH, self.url(path)?, Some(body))
             .await?;
         Self::response_text(&Method::PATCH, response).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete(&self, path: &str) -> Result<()> {
+        let response = self.request(Method::DELETE, self.url(path)?, None).await?;
+        Self::response_text(&Method::DELETE, response).await?;
         Ok(())
     }
 }
@@ -388,6 +418,20 @@ pub(crate) mod tests {
                 assert!(error.contains("denied-body"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn forbidden_list_preserves_graph_details_without_retrying() {
+        let body = r#"{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges to complete the operation.","innerError":{"request-id":"support-request-id"}}}"#;
+        let fixture = Fixture::new(vec![response(403, body)]);
+        let client = fixture.client();
+        let url = client
+            .url("/applications?$select=id,appId,displayName&$top=50")
+            .unwrap();
+        let error = client.get_url(&url).await.unwrap_err().to_string();
+        assert!(error.contains(body));
+        assert!(error.contains("GET /v1.0/applications?$select=id,appId,displayName&$top=50"));
+        assert_eq!(fixture.take_requests().len(), 1);
     }
 
     #[tokio::test]
