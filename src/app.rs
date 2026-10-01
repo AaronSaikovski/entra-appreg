@@ -40,6 +40,15 @@ pub(crate) async fn run_command(
         Command::Create => create(options, graph, tenant_id).await,
         Command::ExposeApi => expose_api(options, graph).await,
         Command::List => list(options, graph).await,
+        Command::Delete => {
+            delete(
+                options,
+                graph,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stderr().lock(),
+            )
+            .await
+        }
     }
 }
 
@@ -595,6 +604,54 @@ async fn expose_api(options: Options, graph: &GraphClient) -> Result<(), AppErro
     Ok(())
 }
 
+async fn delete(
+    options: Options,
+    graph: &GraphClient,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<(), AppError> {
+    use anyhow::Context as _;
+
+    let reference = options
+        .app_id
+        .as_deref()
+        .ok_or_else(|| AppError::Usage("delete requires --appid.".into()))?;
+    let app = graph
+        .get_application(reference)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Application not found: {reference}"))?;
+    let object_id = require_string(&app, "id")?;
+    let client_id = require_string(&app, "appId")?;
+    let name = optional_string(&app, "displayName", "(unnamed)")?;
+    // Quote remote fields so terminal control characters cannot disguise the target.
+    writeln!(
+        output,
+        "Delete this app registration?\n  Name: {name:?}\n  Object ID: {object_id:?}\n  Client ID: {client_id:?}\nDeletion can interrupt applications using this registration."
+    )
+    .context("Could not display deletion target")?;
+    write!(output, "Type 'yes' to delete; any other answer cancels: ")
+        .context("Could not display deletion prompt")?;
+    output.flush().context("Could not flush deletion prompt")?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .context("Could not read deletion confirmation; nothing was deleted")?;
+    if !matches!(answer.as_str(), "yes\n" | "yes\r\n") {
+        writeln!(output, "Deletion cancelled. Nothing was deleted.")
+            .context("Could not display deletion cancellation")?;
+        return Ok(());
+    }
+    graph
+        .delete(&format!("/applications/{}", encode(object_id)))
+        .await?;
+    writeln!(
+        output,
+        "Deleted application {object_id:?} (client ID {client_id:?})."
+    )
+    .context("Application was deleted, but could not display completion")?;
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct ListedApplication {
     #[serde(rename = "displayName")]
@@ -742,6 +799,167 @@ mod tests {
             Invocation::Run(options) => options,
             _ => panic!("expected command"),
         }
+    }
+
+    #[tokio::test]
+    async fn delete_requires_complete_explicit_confirmation() {
+        for answer in ["", "\n", "no\n", "y\n", "YES\n", " yes\n", "yes", "yes \n"] {
+            let fixture = Fixture::new(vec![response(
+                json!({"id":"object", "appId":"client", "displayName":"App"}),
+            )]);
+            let mut output = Vec::new();
+            delete(
+                options(&["delete", "--appid", "object"]),
+                &fixture.client(),
+                &mut answer.as_bytes(),
+                &mut output,
+            )
+            .await
+            .unwrap();
+            assert_eq!(fixture.take_requests().len(), 1, "{answer:?}");
+            assert!(
+                String::from_utf8(output)
+                    .unwrap()
+                    .contains("Nothing was deleted.")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_confirms_resolved_target_and_uses_object_id_after_fallback() {
+        for answer in ["yes\n", "yes\r\n"] {
+            let fixture = Fixture::new(vec![
+                (404, "missing".into(), vec![]),
+                response(
+                    json!({"id":"object/id", "appId":"client", "displayName":"App\n\u{1b}[2J"}),
+                ),
+                (204, String::new(), vec![]),
+            ]);
+            let mut output = Vec::new();
+            delete(
+                options(&["delete", "--appid", "client"]),
+                &fixture.client(),
+                &mut answer.as_bytes(),
+                &mut output,
+            )
+            .await
+            .unwrap();
+            let requests = fixture.take_requests();
+            assert_eq!(requests.len(), 3);
+            assert!(requests[2].starts_with("DELETE /v1.0/applications/object%2Fid "));
+            assert_eq!(requests[2].split_once("\r\n\r\n").unwrap().1, "");
+            let output = String::from_utf8(output).unwrap();
+            let (target, _) = output.split_once("Type 'yes'").unwrap();
+            assert!(target.contains("Object ID: \"object/id\""));
+            assert!(target.contains("Client ID: \"client\""));
+            assert!(target.contains(r#"Name: "App\n\u{1b}[2J""#));
+            assert!(!target.contains('\u{1b}'));
+            assert!(output.contains("Deleted application"));
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_stops_before_confirmation_on_missing_or_invalid_lookup() {
+        for (responses, expected_requests) in [
+            (
+                vec![
+                    (404, "missing".into(), vec![]),
+                    (404, "missing".into(), vec![]),
+                ],
+                2,
+            ),
+            (vec![(403, "denied".into(), vec![])], 1),
+            (vec![response(json!({"id":"object"}))], 1),
+            (
+                vec![response(
+                    json!({"id":"object", "appId":"client", "displayName":42}),
+                )],
+                1,
+            ),
+        ] {
+            let fixture = Fixture::new(responses);
+            let mut output = Vec::new();
+            assert!(
+                delete(
+                    options(&["delete", "--appid", "client"]),
+                    &fixture.client(),
+                    &mut b"yes\n".as_slice(),
+                    &mut output,
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(fixture.take_requests().len(), expected_requests);
+            assert!(output.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_reports_graph_failure_without_retry_or_success() {
+        for status in [403, 404, 500] {
+            let fixture = Fixture::new(vec![
+                response(json!({"id":"object", "appId":"client"})),
+                (status, "delete-failed".into(), vec![]),
+            ]);
+            let mut output = Vec::new();
+            let error = delete(
+                options(&["delete", "--appid", "object"]),
+                &fixture.client(),
+                &mut b"yes\n".as_slice(),
+                &mut output,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("HTTP {status}: delete-failed"))
+            );
+            assert_eq!(fixture.take_requests().len(), 2);
+            assert!(
+                !String::from_utf8(output)
+                    .unwrap()
+                    .contains("Deleted application")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_does_not_mutate_when_confirmation_io_fails() {
+        struct Unflushable;
+        impl std::io::Write for Unflushable {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("flush failed"))
+            }
+        }
+        let fixture = Fixture::new(vec![
+            response(json!({"id":"object", "appId":"client"})),
+            response(json!({"id":"object", "appId":"client"})),
+        ]);
+        let error = delete(
+            options(&["delete", "--appid", "object"]),
+            &fixture.client(),
+            &mut b"yes\n".as_slice(),
+            &mut Unflushable,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("flush deletion prompt"));
+        let error = delete(
+            options(&["delete", "--appid", "object"]),
+            &fixture.client(),
+            &mut b"\xff\n".as_slice(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("read deletion confirmation"));
+        let requests = fixture.take_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|request| request.starts_with("GET ")));
     }
 
     #[test]

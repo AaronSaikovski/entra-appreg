@@ -248,7 +248,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_and_expose_use_active_cli_account_without_tenant_discovery() {
-        for command in [Command::List, Command::ExposeApi] {
+        for command in [Command::List, Command::ExposeApi, Command::Delete] {
             let fixture = Arc::new(Fixture::new(vec![output(true, token_body(OPAQUE_TOKEN))]));
             let context = authenticate_with(command, fixture.clone(), AUTH_TIMEOUT)
                 .await

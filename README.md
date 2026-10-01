@@ -5,6 +5,7 @@
 - **`create`** (default): create a SPA registration, optionally expose a scope and create a client secret, then save a report.
 - **`expose-api`**: add a scope to an existing registration while preserving existing API configuration.
 - **`list`**: read registrations, with optional filtering and JSON output.
+- **`delete`**: delete an existing registration only after interactive confirmation.
 
 Authentication reuses your **`az login`** session through the official [AzureCliCredential](https://docs.rs/azure_identity/latest/azure_identity/struct.AzureCliCredential.html). Graph HTTP uses `reqwest`. The repository now supports Rust only; the former .NET implementation and shared Python test suite have been removed.
 
@@ -48,7 +49,7 @@ az login --tenant "YOUR_TENANT_ID"
 
 For tenants without an Azure subscription, add `--allow-no-subscriptions`. The tool does not log in automatically or read Azure CLI's private token cache. `AZURE_CLIENT_SECRET` and other environment-based client-secret credentials are not selected as a fallback.
 
-Create reads and validates the current tenant and pins token acquisition to it. List and expose-api use the active Azure CLI context. The selected identity needs Graph read/manage permissions; token acquisition alone does not grant authorization. The SDK requires the numeric `expires_on` field supplied by Azure CLI 2.54.0+.
+Create reads and validates the current tenant and pins token acquisition to it. List, expose-api, and delete use the active Azure CLI context. The selected identity needs Graph read/manage permissions; token acquisition alone does not grant authorization. The SDK requires the numeric `expires_on` field supplied by Azure CLI 2.54.0+.
 
 After verifying read access, this command **creates a real registration** and writes `My SPA.txt` in your current directory:
 
@@ -68,6 +69,7 @@ entra-appreg --help
 entra-appreg create --help
 entra-appreg expose-api --help
 entra-appreg list --help
+entra-appreg delete --help
 ```
 
 Unknown commands fail before help/version handling. Otherwise `--version` takes precedence over help, and help takes precedence over option validation—even when these flags appear in a value position. No arguments prints help and exits 2.
@@ -150,15 +152,31 @@ entra-appreg list --top all --json
 
 The tool collects the first matching records returned by Graph, then sorts by name. It does not ask Graph to sort before limiting. Truncation notices go to stderr in JSON mode. Pagination rejects foreign-origin links and repeated links. List never writes a report or changes tenant state; options for other commands are rejected.
 
+### Delete a registration
+
+Verify the selected tenant with `az account show` first. This command can interrupt applications using the registration:
+
+```sh
+entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
+```
+
+- `--appid <id>` is required. Accepts an application object ID or client ID, not a display name. Blank IDs, `no-id`, and options belonging to other commands are rejected before authentication.
+- Looks up the registration, then shows its display name, object ID, and client ID. Remote fields are quoted and terminal control characters escaped.
+- Requires terminal stdin and terminal stderr. Piped input and redirected prompts are rejected before authentication (exit 2); there is no `--yes` or force bypass.
+- Type exactly **`yes`**, then Enter, to delete. Enter alone, any other answer, or EOF cancels without a DELETE request (exit 0). Input/output errors before confirmation also prevent deletion.
+- Deletes the resolved **object ID**, even when lookup used a client ID. Only a lookup 404 allows the client-ID fallback; a missing app or Graph error exits 1. No retries, report, or local report cleanup.
+- Uses the active `az login` context and requires permission to delete the target. Graph's delegated permission is `Application.ReadWrite.All`, with applicable user ownership/role requirements.
+- Graph [soft-deletes applications for 30 days](https://learn.microsoft.com/en-us/graph/api/application-delete?view=graph-rest-1.0). This CLI does not restore or permanently purge deleted registrations.
+
 ## Output, failures, and security
 
 Create prints `AUTH_APP_ID` (object ID) and `AUTH_CLIENT_ID` (client/application ID) immediately after Graph creates the registration, before optional mutations. Save these IDs for recovery. Reports contain IDs, tenant, redirects, and any requested scope/secret details. Filenames are sanitized and collision-safe: `My SPA.txt`, `My SPA-1.txt`, etc.; existing files are not overwritten.
 
 | Exit | Meaning |
 |---|---|
-| 0 | Success, help, or version. |
-| 1 | Authentication, Graph, or file failure. |
-| 2 | Invalid arguments or no arguments. |
+| 0 | Success, cancelled deletion, help, or version. |
+| 1 | Authentication, Graph, file, or confirmation I/O failure. |
+| 2 | Invalid arguments, no arguments, or non-interactive deletion. |
 
 Errors go to stderr. Graph errors retain response bodies. Authentication diagnostics omit raw token output; access tokens stay in memory and are not included in reports.
 
@@ -168,11 +186,11 @@ Unix reports are created with mode 0600; Windows inherits directory ACLs. Check 
 
 ### Operational limits
 
-- No retry, rollback, delete command, or name-based deduplication. A later failure can leave an app already created. Recover using the printed IDs; do not blindly rerun create.
+- No retry, rollback, restore command, or name-based deduplication. A later failure can leave an app already created. Recover using the printed IDs; do not blindly rerun create.
 - Expose-api preserves the fetched snapshot, not concurrent edits; no conditional update/ETag scheme is used.
 - One scope per invocation; no pre-authorization, custom Application ID URI editor, or add-secret-to-existing-app command.
 - Authentication is bounded to ten seconds; cancellation kills the directly spawned process, but not necessarily all shell descendants. Graph requests have separate ten-second timeouts and no redirects/retries.
-- Human output includes remote text verbatim. Prefer JSON when processing untrusted names.
+- Create/expose/list human output includes remote text verbatim. Delete escapes remote fields in its confirmation prompt. Prefer JSON when processing untrusted names.
 
 ### Troubleshooting
 
@@ -201,11 +219,12 @@ cargo test --locked
 
 cargo run --locked -- --version
 cargo run --locked -- --help
+cargo run --locked -- delete --help
 # Expected exit 2 before authentication
 cargo run --locked -- list --top 0
 ```
 
-Fix formatting with `cargo fmt`. Preserve `Cargo.lock`; build output `/target/` and release artifacts `/dist/` are ignored. Tests live beside private helpers with `#[test]`/`#[tokio::test]`, injected SDK executors, loopback HTTP, and temporary files. They cover parser semantics, tenant selection, safe failures, date/scope/Unicode boundaries, lookup/pagination safety, API preservation, and report collisions/permissions. They do not use a live login. There is no separate Python test suite or coverage threshold.
+Fix formatting with `cargo fmt`. Preserve `Cargo.lock`; build output `/target/` and release artifacts `/dist/` are ignored. Tests live beside private helpers with `#[test]`/`#[tokio::test]`, injected SDK executors, loopback HTTP, and temporary files. They cover parser semantics, tenant selection, safe failures, date/scope/Unicode boundaries, lookup/pagination safety, API preservation, confirmed deletion/cancellation, and report collisions/permissions. They do not use a live login. There is no separate Python test suite or coverage threshold.
 
 Rust formatter backups (`*.rs.bk`) and profiling data (`*.profraw`, `*.profdata`) are also ignored. Keep `Cargo.lock`, source, workflows, and shared `.cargo/config.toml` tracked. The ignore rules no longer carry exclusions for the removed .NET/Python test tooling; 17 ignore-rule checks verified generated/secret artifacts versus trackable project files.
 
@@ -246,7 +265,7 @@ Update README behavior/usage/limits and [CHANGELOG.md](CHANGELOG.md) Unreleased 
 
 ## Smoke test checklist
 
-Offline: run version and all four help topics without login, then `list --top 0` and blank `--appid` validation. Neither invalid invocation should authenticate or create a report.
+Offline: run version and all five help topics without login, then `list --top 0`, blank `--appid`, and `delete` without `--appid` validation. Also check that `delete --appid <id>` rejects piped input or redirected stderr with exit 2 before authentication. None of these invalid invocations should authenticate, mutate Graph, or create a report.
 
 For live acceptance, deliberately choose a **test tenant**; do not change or log out a shared operator session as a routine check:
 
@@ -256,11 +275,13 @@ For live acceptance, deliberately choose a **test tenant**; do not change or log
 4. Expose a scope: preserve existing API settings/scopes/URIs; a case-variant duplicate must fail without PATCH.
 5. Opt in to a test secret: inspect expiry, report contents, and file permissions; keep captured output private.
 6. Check invalid scope/lifetime options before mutations, and signed-out behavior only in an isolated CLI profile.
-7. Remove test registrations deliberately after inspecting results. The CLI does not delete them.
+7. Remove only disposable test registrations deliberately: run `delete --appid <test-id>`, inspect the displayed IDs, first cancel and confirm the registration remains, then rerun and type `yes`. Confirm removal with read-only list or the portal. Protect or dispose of local secret-bearing reports separately; deletion does not remove them.
 
 Offline tests do not prove live Graph authorization, Windows ACL behavior, or GitHub publication. Current verification evidence is recorded in the changelog; historical Python-suite results predate the Rust-only cutover and are not current coverage.
 
 Root-layout verification on macOS: all 43 Rust tests passed, along with rustfmt, strict Clippy, cargo check, debug/ARM64 release builds, and actionlint for both workflows. Both workflows' actual binary-smoke scripts and root-manifest tag guard passed locally. Archive checks covered tar extraction/executable permissions, checksums, and ZIP packaging with a fixture binary. Root `target/` is ignored; `Cargo.lock` and source remain trackable. Hosted Linux/Windows execution, GitHub publication, and live-tenant operations remain unverified.
+
+Confirmed-delete verification on macOS: all 49 Rust tests, rustfmt, strict all-target Clippy, cargo check, and locked debug/release builds passed. Real binaries verified delete help, argument rejection, and non-interactive safety without Azure CLI on PATH. A temporary executable using the production workflow and loopback Graph fixture exercised terminal confirmation, client-ID fallback to object-ID deletion, refusal, Enter, EOF, and Graph 403 propagation; it was removed afterward. No live Azure authentication or tenant mutation was performed. Windows/Linux terminal behavior and live Graph authorization remain unverified.
 
 ## License and history
 

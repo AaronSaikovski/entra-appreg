@@ -5,7 +5,7 @@ mod graph;
 mod report;
 
 use cli::{HelpTopic, Invocation};
-use std::process::ExitCode;
+use std::{io::IsTerminal, process::ExitCode};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -30,6 +30,14 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if options.command == cli::Command::Delete
+        && !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal())
+    {
+        eprintln!(
+            "delete requires terminal input and terminal stderr for confirmation; nothing was deleted."
+        );
+        return ExitCode::from(2);
+    }
     let auth = match auth::authenticate(options.command).await {
         Ok(auth) => auth,
         Err(error) => {

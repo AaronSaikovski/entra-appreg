@@ -155,6 +155,12 @@ impl GraphClient {
         Self::response_text(&Method::PATCH, response).await?;
         Ok(())
     }
+
+    pub(crate) async fn delete(&self, path: &str) -> Result<()> {
+        let response = self.request(Method::DELETE, self.url(path)?, None).await?;
+        Self::response_text(&Method::DELETE, response).await?;
+        Ok(())
+    }
 }
 
 fn request_path(url: &Url) -> String {
