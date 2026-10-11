@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // fallbackStem names the report when nothing usable remains of the app name.
@@ -73,11 +74,12 @@ func candidateName(stem string, n uint64) string {
 }
 
 // occupied reports whether the open error err means path is already taken.
-// Some platforms report an existing directory as a permission error, so a
-// permission error counts when Lstat finds an entry at path; Lstat also sees
-// dangling symlinks.
+// Windows reports an existing directory as EISDIR (Go maps CreateFile's
+// ERROR_ACCESS_DENIED to it), and some platforms report it as a permission
+// error, so a permission error counts when Lstat finds an entry at path;
+// Lstat also sees dangling symlinks.
 func occupied(path string, err error) bool {
-	if errors.Is(err, fs.ErrExist) {
+	if errors.Is(err, fs.ErrExist) || errors.Is(err, syscall.EISDIR) {
 		return true
 	}
 	if !errors.Is(err, fs.ErrPermission) {

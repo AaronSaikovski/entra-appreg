@@ -7,6 +7,8 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 ### Fixed
 
 - **Windows CI `Check formatting` failure.** The `windows-2022` job had failed on every run since the Go port: the runner's `core.autocrlf=true` checked `.go` files out with CRLF, so `gofmt -l` flagged all 39. A new `.gitattributes` (`* text=auto eol=lf`) forces LF checkout; the index was already all LF, so no renormalization was needed. Verification: a local clone with `core.autocrlf=true` flagged 39 files before the change and 0 after; `task check` passed on macOS. The Windows runner was not re-run locally.
+- **Windows report naming skipped occupied directories incorrectly.** `TestOccupiedFileAndDirectoryAreNotOverwritten` failed on Windows with `example-1.txt: is a directory`. Go turns `CreateFile(CREATE_NEW)`'s `ERROR_ACCESS_DENIED` on an existing directory into `syscall.EISDIR`, which matches neither `fs.ErrExist` nor `fs.ErrPermission`, so `report.Write` stopped instead of trying `-2`. `occupied` now counts `EISDIR` as a taken name; `O_EXCL` remains the only claim check. Verification: `task check` passed on macOS and `GOOS=windows go test -c ./internal/report` compiled. The Windows runner was not re-run locally.
+- **Release job timeout raised from 45 to 60 minutes** (`release.yml`). This does not explain the observed GoReleaser failure: the runner was shut down about 3.5 minutes into the build. One cold `-trimpath` linux/amd64 build peaked at about 4.9 GB RSS on macOS, so GoReleaser's default of one build per CPU may run out of memory on the runner. Not re-run on GitHub Actions.
 
 ### Added
 
