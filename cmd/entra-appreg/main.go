@@ -16,6 +16,7 @@ import (
 	"github.com/AaronSaikovski/entra-appreg/internal/auth"
 	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+	"github.com/AaronSaikovski/entra-appreg/internal/keyvault"
 )
 
 // Exit codes.
@@ -24,6 +25,23 @@ const (
 	exitFailure = 1 // operational failure: auth, Graph, I/O
 	exitUsage   = 2 // invalid input, including no arguments and a non-TTY delete
 )
+
+// Build metadata injected at link time via:
+//
+//	-ldflags "-X main.version=... -X main.commit=... -X main.date=..."
+//
+// Release (Taskfile / GoReleaser) pipelines populate all three; version has
+// no leading "v". Source code never hard-codes a version.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// fullVersion returns the full version string shown by --version.
+func fullVersion() string {
+	return fmt.Sprintf("%s (commit %s, built %s)", version, commit, date)
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -39,14 +57,14 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 	}
 	switch inv.Kind {
 	case cli.KindHelp:
-		fmt.Fprintln(stdout, cli.HelpText(inv.Topic))
+		fmt.Fprintln(stdout, cli.HelpText(inv.Topic, version))
 		return exitOK
 	case cli.KindVersion:
-		fmt.Fprintln(stdout, "entra-appreg "+cli.Version())
+		fmt.Fprintln(stdout, "entra-appreg "+fullVersion())
 		return exitOK
 	case cli.KindNoArguments:
 		fmt.Fprint(stderr, "No arguments given. Here is how to use this program:\n\n")
-		fmt.Fprintln(stdout, cli.HelpText(cli.TopicGeneral))
+		fmt.Fprintln(stdout, cli.HelpText(cli.TopicGeneral, version))
 		return exitUsage
 	}
 	opts := inv.Options
@@ -79,11 +97,21 @@ func execute(opts *cli.Options, stdin *os.File, stdout io.Writer, stderr *os.Fil
 	if err != nil {
 		return fail(stderr, err)
 	}
-	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir}
+	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir, KeyVault: openKeyVault}
 	if err := app.Run(ctx, opts, client, env); err != nil {
 		return fail(stderr, err)
 	}
 	return exitOK
+}
+
+// openKeyVault acquires an Azure Key Vault token (a second az process, only
+// when create stores its secret in a vault) and returns the vault client.
+func openKeyVault(ctx context.Context, vaultURI string) (app.SecretStore, error) {
+	cred, err := auth.KeyVault(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Key Vault authentication failed: %w", err)
+	}
+	return keyvault.New(vaultURI, cred)
 }
 
 // fail prints err to w and returns its exit code: a usage error prints its

@@ -1,10 +1,10 @@
 # entra-appreg
 
-**In testing (first release: v0.0.1).** A Go CLI for Microsoft Entra ID single-page application (SPA) registrations. `entra-appreg --version` reports the git tag the binary was built from.
+**In testing (first release: v0.0.1).** A Go CLI for Microsoft Entra ID single-page application (SPA) registrations. `entra-appreg --version` reports the git tag, commit and build time the binary was built from.
 
 | Command | What it does |
 |---|---|
-| `create` (default) | Creates a SPA registration. It can also expose an API scope and create a client secret. It then writes a report file. |
+| `create` (default) | Creates a SPA registration together with its service principal and the Microsoft Graph `User.Read` permission. It can also expose an API scope and create a client secret. It then writes a report file. |
 | `expose-api` | Adds a scope to an existing registration and keeps its existing API configuration. |
 | `list` | Reads registrations; optional name filter and JSON output. |
 | `delete` | Deletes a registration, but only after you confirm interactively. |
@@ -47,9 +47,15 @@ entra-appreg create --name "My SPA" --redirect-urls http://localhost:5173/auth/c
 
 Running it again creates a second registration. Creation is not idempotent; use `--appid` to refer to an existing app.
 
+To keep the settings in a file, use the sample [`examples/spa.params.json`](examples/spa.params.json); see [Parameters file](#parameters-file):
+
+```sh
+entra-appreg create --params-file examples/spa.params.json
+```
+
 ## Authentication
 
-- Each Graph command starts Azure CLI **once**: the SDK runs `az account get-access-token` for the active `az login` context. First the CLI checks that `az` is on `PATH`, without starting it. Sign-in must finish within 10 seconds.
+- Each Graph command starts Azure CLI **once**: the SDK runs `az account get-access-token` for the active `az login` context. First the CLI checks that `az` is on `PATH`, without starting it. Sign-in must finish within 10 seconds. `create --keyvault-uri` starts it a second time, for a Key Vault token, before anything is created.
 - The tenant ID shown by `list` and written to `create` reports comes from Microsoft Graph (`/organization`) using the same token, so it always matches the tenant the token was issued for. To work in a different tenant, switch with `az login --tenant <tenant-id>` first.
 - The CLI never signs in for you or reads Azure CLI's token cache. It does not fall back to `AZURE_CLIENT_SECRET` or any other environment credential.
 - Auth error messages are fixed text and never include Azure CLI output or tokens. They go to stderr and the command exits 1, so stdout stays empty for `--json`.
@@ -68,12 +74,31 @@ entra-appreg --help
 entra-appreg create --help      # also: expose-api, list, delete
 ```
 
+### Parameters file
+
+Every command accepts `--params-file <file.json>`. The file holds one JSON object; its keys are the long option names without `--`. A sample for `create` is in [`examples/spa.params.json`](examples/spa.params.json):
+
+```json
+{
+  "name": "My SPA",
+  "redirect-urls": ["http://localhost:5173/auth/callback", "https://myapp.example.com/auth/callback"],
+  "scope-name": "access_as_user",
+  "scope-consent": "users"
+}
+```
+
+- **Command line wins.** An option given on the command line replaces the file's value. For `redirect-urls`, command-line values replace the file's whole list; they are not merged.
+- **Same rules.** File values are checked exactly like command-line ones, including which options a command accepts. For example, `top` in a file used with `create` exits 2.
+- **Types.** Text options take JSON strings. `redirect-urls` takes an array of strings or one comma-separated string. `create-secret` and `json` take `true`/`false`; `false` is the same as leaving the key out. `top` and `secret-expiry` also accept whole numbers (`"top": 10`). `null` counts as absent.
+- **Strict.** Unknown keys (including the `redirect-url` alias and a nested `params-file`), wrong types, invalid JSON, more than one top-level value, or a file over 1 MiB exit 2 before sign-in. Help and version never read the file.
+- The path is relative to the current directory. Don't put secrets in the file; no option takes one.
+
 ### create
 
 | Option | Behavior |
 |---|---|
 | `--name <text>` | Required for a new registration. Also used for the report filename. |
-| `--redirect-urls <list>` / `--redirect-url <list>` | Optional. Comma-separated absolute HTTP(S) URIs; you can repeat the option. Whitespace is trimmed and exact duplicates removed. Case and trailing slashes are kept. If omitted, an empty redirect list is sent. |
+| `--redirect-urls <list>` / `--redirect-url <list>` | Optional. Comma-separated absolute HTTP(S) URIs; you can repeat the option. Whitespace is trimmed and exact duplicates removed. Case and trailing slashes are kept. If omitted, an empty redirect list is sent and a warning goes to stderr, because a SPA without a redirect URI cannot sign anyone in. |
 | `--appid <id>` | Looks up an existing app by object ID or client ID. If found, the command exits 0 without changing anything or writing a report. If both lookups return 404, it creates a new app. A blank value is rejected; `no-id` skips the lookup. |
 | `--audience <value>` | Case-insensitive; default `AzureADMyOrg`. See the table below. |
 | `--scope-*` | Optional API scope. See [Scope options](#scope-options). |
@@ -81,6 +106,8 @@ entra-appreg create --help      # also: expose-api, list, delete
 | `--secret-expiry <value>` | `90`, `180`, `365`, `545` or `730` days, or `custom`. Default 180. Requires `--create-secret`. |
 | `--secret-start <DD/MM/YYYY>` | Custom start date in UTC. Defaults to today and cannot be in the past. |
 | `--secret-end <DD/MM/YYYY>` | Required for a custom lifetime. Must be after the start; valid until 23:59:59 UTC. |
+| `--keyvault-uri <uri>` / `--keyvault-secret-name <name>` | Also store the new secret in Azure Key Vault. See [Store the secret in Key Vault](#store-the-secret-in-key-vault). |
+| `--params-file <file.json>` | Reads any of the options above from JSON. See [Parameters file](#parameters-file). |
 
 | Audience | Who can sign in |
 |---|---|
@@ -96,9 +123,40 @@ Validation runs in this order:
 - **Personal accounts.** Audiences that include personal accounts request access-token version 2.
 - **Secret dates.** Giving a date without `--secret-expiry` implies `custom`. Don't combine dates with a numeric preset. A future start date is midnight UTC; a start of today is not sent to Graph. Tenant policy may cap the lifetime further.
 
+#### Single-page app setup
+
+Graph's `POST /applications` creates only the registration. `create` adds what the Entra admin center adds, so the SPA can sign users in:
+
+| Step | Why |
+|---|---|
+| `spa.redirectUris` | Authorization code flow with PKCE for MSAL.js. No implicit grant is enabled. |
+| Service principal (`POST /servicePrincipals`), printed as `AUTH_SP_ID` | The enterprise application in your tenant. Without it, admins can't grant consent, tenants that restrict user consent block sign-in, and tokens for the app's own `api://` scope fail with AADSTS500011. |
+| Delegated Microsoft Graph `User.Read` in `requiredResourceAccess` | The portal default. It lets an admin use **Grant admin consent** before anyone signs in. |
+| With `--scope-name`: the app's own scope added to `requiredResourceAccess` | Admin consent then covers `api://<client-id>/<scope>` too. This matters most for the default admins-only scope, which users can't consent to. |
+
+Still up to you: granting consent (users at first sign-in, or an admin via **Enterprise applications → Permissions**), and adding production redirect URIs later in the portal. `expose-api` doesn't change `requiredResourceAccess`.
+
+#### SPA readiness and known gaps
+
+For a new single-tenant SPA, `create` sets every registration setting that MSAL.js sign-in needs: SPA redirect URIs (auth code + PKCE, no implicit grant), the audience, the service principal, Graph `User.Read`, and optionally its own API scope. Known gaps:
+
+| Gap | Impact | Workaround |
+|---|---|---|
+| Not yet verified against a live tenant | All Graph calls are tested only against a local fake. Not yet confirmed: Graph accepting the app's own scope in `requiredResourceAccess` in the same PATCH that defines it, and service principal creation right after the app. | Run the [smoke test checklist](#smoke-test-checklist) in a test tenant. |
+| Redirect URIs can't be changed after creation | Production URLs added later need the portal. | Entra admin center → **Authentication**. |
+| v1 access tokens for the app's own API | With `AzureADMyOrg`/`AzureADMultipleOrgs`, `requestedAccessTokenVersion` is not set, so `api://<client-id>/…` tokens are v1 (issuer `https://sts.windows.net/<tenant>/`). Backends expecting v2 issuers reject them. Sign-in and Graph calls are unaffected. | Set **Manifest → `requestedAccessTokenVersion`: 2**, or accept v1 issuers in the API. |
+| No admin consent grant | Tenants that block user consent, and admins-only scopes (the default), need an admin before users can sign in. | **Grant admin consent** in the portal. |
+| Loose redirect validation | Any `http://` host is accepted locally. Entra is expected to allow plain `http` only for localhost, so such URIs fail at Graph or sign-in instead of exiting 2. | Use `https` except for `localhost`. |
+| `expose-api` doesn't update `requiredResourceAccess` | Admin consent on an existing app doesn't cover the new scope. | Add it under **API permissions → My APIs**. |
+
+Examples:
+
 ```sh
 # Scope with user consent, no secret
 entra-appreg create --name "My SPA" --redirect-urls "http://localhost:5173/auth/callback,https://example.com/auth/callback" --scope-name access_as_user --scope-consent users
+
+# Client secret stored only in Key Vault (the report records its Key Vault ID, not the value)
+entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --keyvault-uri https://my-vault.vault.azure.net --keyvault-secret-name backend-client-secret
 
 # Client secret (the report contains it in plaintext)
 entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --secret-expiry 90
@@ -106,6 +164,38 @@ entra-appreg create --name "Backend client" --redirect-urls https://example.com/
 # Existing registration: look it up only; nothing is changed
 entra-appreg create --appid "YOUR_CLIENT_OR_OBJECT_ID"
 ```
+
+#### Store the secret in Key Vault
+
+With `--create-secret`, add both `--keyvault-uri https://<vault-name>.vault.azure.net` and `--keyvault-secret-name <name>` to also write the new secret value to Azure Key Vault. This uses the [Azure SDK for Go `azsecrets`](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-go) client.
+
+- **Validation.** Both options are required together and only with `--create-secret`. The URI must be `https://<vault-name>.vault.azure.net` (public cloud; no path, port or query), and the name must be 1–127 letters, digits or hyphens. Like the other `create` options, they are checked after sign-in and any `--appid` lookup. Bad values exit 2 before anything is created and before the Key Vault token is requested.
+- **Sign-in.** A Key Vault token comes from a second `az` call, made after the read-only checks and before the app is created, so a missing token changes nothing. The vault must be in the tenant of your active `az login`. The SDK handles Key Vault's challenge and checks that the challenge comes from a `vault.azure.net` resource.
+- **Permission.** Your `az login` identity needs the **Key Vault Secrets Officer** role on the vault. See [Key Vault permissions](#key-vault-permissions).
+- **What is stored.** The secret value, with `exp` set to the secret's expiry, `nbf` set to a future custom start date, and tags `entra-client-id` and `entra-key-id`. If the name already exists, Key Vault adds a new version. A soft-deleted secret with the same name fails with HTTP 409.
+- **Output.** stdout prints `Key Vault secret ID: <version id>`, and the report adds `Key Vault secret:` and `Key Vault secret ID:` lines. Once Key Vault confirms the store, the report **does not contain the secret**: `Secret value:` reads `(stored in Key Vault: <version id>)`.
+- **Failure.** If storing fails after the secret is created, the report records `Key Vault secret ID: (not stored)` and keeps the secret, stderr says so, and the command exits 1. There are no retries; each request has a 10-second timeout and redirects aren't followed.
+
+##### Key Vault permissions
+
+The secret is written as the signed-in `az login` identity. **Assign that identity the built-in Azure role `Key Vault Secrets Officer` on the vault.** It is the least-privileged built-in role that can create secrets (data action `Microsoft.KeyVault/vaults/secrets/setSecret/action`).
+
+```sh
+az role assignment create \
+  --role "Key Vault Secrets Officer" \
+  --assignee "<your-upn-or-object-id>" \
+  --scope "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.KeyVault/vaults/<vault-name>"
+```
+
+- **Who can assign it.** Assigning the role needs **Owner**, **User Access Administrator** or **Role Based Access Control Administrator** at the vault's scope. New assignments can take a few minutes to apply.
+- **The vault must use Azure RBAC** (**Settings → Access configuration → Azure role-based access control**, the default for new vaults). If it still uses the legacy **Vault access policy** model, role assignments are ignored; instead add an access policy for your user with the **Secret permission: Set**.
+- **Roles that are not enough** (HTTP 403):
+  - subscription or resource-group **Owner** / **Contributor**, and **Key Vault Contributor** (management-plane only);
+  - **Key Vault Secrets User** and **Key Vault Reader** (read-only).
+  - **Key Vault Administrator** works but grants far more than needed.
+- **Same tenant.** The vault must be in the tenant of your active `az login`; otherwise HTTP 401.
+- **Network.** If the vault's firewall restricts access, allow your client IP or run from a network that reaches its private endpoint; otherwise HTTP 403 (`ForbiddenByFirewall`).
+- **Graph is separate.** Creating the app, service principal and client secret still needs the Graph permissions in [Permissions and 403 errors](#permissions-and-403-errors). The Key Vault role is needed only with `--keyvault-uri`.
 
 ### Scope options
 
@@ -169,7 +259,7 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
 
 ## Output, reports and secrets
 
-- **IDs printed early.** `create` prints `AUTH_APP_ID=<object id>` and `AUTH_CLIENT_ID=<client id>` right after the app is created, before the optional scope and secret steps. Save them so you can recover if a later step fails.
+- **IDs printed early.** `create` prints `AUTH_APP_ID=<object id>` and `AUTH_CLIENT_ID=<client id>` right after the app is created, then `AUTH_SP_ID=<service principal id>` once the service principal exists. These come before the optional scope and secret steps. Save them so you can recover if a later step fails. If the service principal step fails, stderr shows the `az ad sp create --id <client-id>` command to finish it by hand.
 - **Report files.** Each report gets a new file in the current directory: `My-SPA.txt`, then `My-SPA-1.txt`, and so on. Existing files are never overwritten.
   - Spaces in the name become hyphens, and unsafe characters are replaced.
   - On Windows, reserved device names get a `_` prefix (e.g. `_NUL.txt`).
@@ -178,7 +268,7 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
   - A successful run never prints the secret to the terminal.
   - If writing the report fails, the whole report, including the secret, is printed to stdout so it isn't lost, and the command exits 1.
   - If Graph doesn't return the secret's `keyId`, the report records `(not returned by Graph)` and keeps the secret, and the command exits 1.
-  - Move secrets to a secure store such as Key Vault. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
+  - With `--keyvault-uri`, a successfully stored secret is left out of the report (see [Store the secret in Key Vault](#store-the-secret-in-key-vault)). Without it, move the secret to a secure store and delete the report. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
 
 | Exit | Meaning |
 |---|---|
@@ -193,7 +283,8 @@ Errors go to stderr. Graph errors include Graph's response body, capped at 1 MiB
 - **No undo.** There is no retry, rollback or restore. A failure after creation can leave the app created; recover with the printed IDs instead of rerunning `create`.
 - **Duplicate-name check isn't atomic.** Two creates running at the same time, or a slow directory sync, can still produce duplicates.
 - **Concurrent edits.** `expose-api` works from the copy it fetched; it does not protect against someone else editing the app at the same moment.
-- **Missing features.** One scope per run. No pre-authorization, Application ID URI editor, or adding a secret to an existing app.
+- **Missing features.** One scope per run. No pre-authorization, consent grant, Application ID URI editor, adding redirect URIs or a secret to an existing app, or token-version option. See [SPA readiness and known gaps](#spa-readiness-and-known-gaps).
+- **Service principal timing.** It is created immediately after the app, with no retry. If Graph hasn't yet replicated the new app, that request can fail; run the printed `az ad sp create` command, then `expose-api` if you wanted a scope.
 - **Timeouts.** Each Graph request has a 10-second timeout and never follows redirects. If the 10-second sign-in deadline expires, the CLI kills the `az` process it started; processes `az` itself started may keep running.
 - **Unescaped output.** `create` and `expose-api` print remote text as-is. Use JSON when you process untrusted names.
 - **Side effects of the typed Graph SDK:**
@@ -211,6 +302,7 @@ Reading applications needs the delegated Graph permission `Application.Read.All`
 |---|---|
 | Sign-in failure | Azure CLI 2.54.0+ is on `PATH`; run `az account show`, then `az login` to the intended tenant. |
 | Graph 403 | Confirm identity and tenant with `az account show`. If they're right, ask your Entra admin to review Azure CLI's Graph consent and your roles or app ownership. |
+| Key Vault 401 / 403 / 409 | 401: the vault is in another tenant. 403: grant **Key Vault Secrets Officer** or check the firewall. 409: recover or purge the soft-deleted secret, or pick another name. |
 | App not found / wrong tenant | Check the active CLI account. Both object ID and client ID work with `--appid`. |
 | `--name=value` rejected | Use a space: `--name value`. |
 | Exit 2 | A required option is missing or an option doesn't belong to that command; run the command's `--help`. |
@@ -223,17 +315,18 @@ The Go module `github.com/AaronSaikovski/entra-appreg` is at the repository root
 | Package | Role |
 |---|---|
 | `cmd/entra-appreg` | Entry point: parse → delete terminal check → sign in → Graph client → command → exit code. |
-| `internal/cli` | Strict parsing, Cobra flags, validation, help text; `version.go` resolves the build version (see [Versioning](#versioning)). |
+| `internal/cli` | Strict parsing, Cobra flags, validation, help text. |
 | `internal/auth` | Checks `az` is on `PATH`, then gets one token from Azure CLI within 10 seconds. |
 | `internal/graph` | Graph client: no retries or redirects, raw error bodies, next-page link checks. |
 | `internal/graphtest` | Local fake Graph server for tests. |
 | `internal/app` | The four commands, plus scope and secret-lifetime rules. |
 | `internal/report` | Safe, collision-free report files. |
+| `internal/keyvault` | Stores the client secret with the Azure SDK `azsecrets` client: vault URI/name validation, no retries or redirects, permission guidance. |
 
 Common tasks ([Task](https://taskfile.dev) is optional):
 
 ```sh
-task check        # gofmt, vet (native + GOOS=windows), build, tests, binary smoke incl. --version == git describe
+task check        # gofmt, vet (native + GOOS=windows), build, tests, binary smoke incl. the exact --version line
 task test         # go test -v ./...
 task run -- list --help
 task staticcheck  # pinned Go-1.27-compatible staticcheck
@@ -261,15 +354,19 @@ All workflows use the Go version from `go.mod`. `staticcheck.conf` turns off onl
 
 ### Versioning
 
-The version comes from **git tags**; no version number is stored in the source. The build stamps it into the binary via `-ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=<tag>"`. `--version` and the help heading print it without the leading `v`.
+The version comes from **git tags**; no version number is stored in the source. Build metadata lives in `package main` (`cmd/entra-appreg/main.go`) and is stamped in at link time:
+
+```sh
+go build -ldflags "-X main.version=0.0.1 -X main.commit=abc1234 -X main.date=2026-10-12T01:02:03Z" ./cmd/entra-appreg
+```
+
+`--version` prints all three: `entra-appreg 0.0.1 (commit abc1234, built 2026-10-12T01:02:03Z)`. The general help heading shows only the version. `version` is injected without the leading `v`.
 
 | How it was built | `--version` shows |
 |---|---|
-| GoReleaser release from tag `v0.0.1` | `0.0.1` |
-| `task build` / `task release` / `task run` | `git describe --tags --always --dirty`, e.g. `0.0.1` on the tag, or `0.0.1-3-gabc1234-dirty` between tags |
-| `go install github.com/AaronSaikovski/entra-appreg/cmd/entra-appreg@v0.0.1` | `0.0.1` (module version Go records) |
-| plain `go build` in a git checkout | Go's VCS pseudo-version, e.g. `0.0.2-0.2026…-abc123+dirty` |
-| no tag or build info | `dev` |
+| GoReleaser release from tag `v0.0.1` | `0.0.1 (commit <short sha>, built <release time UTC>)` |
+| `task build` / `task release` / `task run` / `task check` | `git describe --tags --always --dirty` without the `v` (e.g. `0.0.1`, or `0.0.1-3-gabc1234-dirty` between tags), the short commit, and the build time in UTC |
+| plain `go build`, `go run` or `go install …@v0.0.1` (no `-ldflags`) | `dev (commit none, built unknown)` |
 
 To release:
 
@@ -287,14 +384,15 @@ After every change, update this README for behavior or limit changes, and add a 
 - `--version` and all five help topics.
 - `list --top 0`, a blank `--appid`, and `delete` without `--appid` each exit 2.
 - `delete --appid <id>` with piped input exits 2 before sign-in.
+- `list --params-file <file>` with an unknown key, or with `"scope-name"`, exits 2 before sign-in.
 
 **Live**, only in a deliberately chosen **test tenant**. Never log out or switch a shared operator session.
 
 1. `list --top 1 --json`: stdout is valid JSON only, the tenant is correct, and no report is written.
-2. Create a test SPA. Check audience and redirects in the portal, the two IDs, and the report.
+2. Create a test SPA (try `--params-file` with a copy of `examples/spa.params.json` and a unique `name`). In the portal check the audience and redirects, that **Enterprise applications** lists it under the printed `AUTH_SP_ID`, and that **API permissions** shows Graph `User.Read` (plus the app's own scope if exposed). Check the three IDs and the report. Sign in once with an MSAL.js sample using the client ID, tenant ID and a listed redirect URI.
 3. Run create again with the existing `--appid`: nothing is created or changed, and no report is written.
 4. Expose a scope. Existing settings are kept, and a duplicate name that differs only in case fails without an update.
-5. Create a test secret. Check the expiry, the report contents, and the file permissions.
+5. Create a test secret. Check the expiry, the report contents, and the file permissions. Repeat with `--keyvault-uri`/`--keyvault-secret-name` against a test vault: the secret version, expiry and tags appear in the vault, and the report lists its ID.
 6. Remove disposable registrations with `delete`: cancel once, check the app still exists, then confirm with `yes`.
 
 ## License

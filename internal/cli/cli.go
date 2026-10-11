@@ -55,7 +55,11 @@ type Options struct {
 
 	AppID, Name, Audience, ScopeName, ScopeDisplayName, ScopeDescription, ScopeConsent,
 	ScopeUserDisplayName, ScopeUserDescription, ScopeState, Top,
-	SecretExpiry, SecretStart, SecretEnd *string
+	SecretExpiry, SecretStart, SecretEnd, KeyVaultURI, KeyVaultSecretName *string
+
+	// ParamsFile is the --params-file path. Its values are already merged
+	// into the fields above, under any given on the command line.
+	ParamsFile *string
 
 	// RedirectURIs are split on ',', trimmed and non-empty, in their raw
 	// spelling; they are not yet deduplicated.
@@ -118,10 +122,11 @@ var commands = map[string]commandSpec{
 // a *UsageError.
 //
 // It runs in three phases: a pre-parse that resolves the command word and the
-// help/version/no-arguments early exits, a Cobra pass that reads the flags,
-// and validate, which enforces the per-command option rules. Creation fields
-// and scope/secret semantics are deliberately left to app.create, which
-// checks them after the --appid lookup so an existing ID remains a no-op.
+// help/version/no-arguments early exits, a Cobra pass that reads the flags
+// (then fills unset options from --params-file), and validate, which enforces
+// the per-command option rules. Creation fields and scope/secret semantics
+// are deliberately left to app.create, which checks them after the --appid
+// lookup so an existing ID remains a no-op.
 func Parse(args []string) (Invocation, error) {
 	commandGiven := len(args) > 0 && !strings.HasPrefix(args[0], "-")
 	name := "create"
@@ -148,7 +153,11 @@ func Parse(args []string) (Invocation, error) {
 	if err != nil {
 		return Invocation{}, err
 	}
-
+	if options.ParamsFile != nil {
+		if err := applyParamsFile(options, *options.ParamsFile); err != nil {
+			return Invocation{}, err
+		}
+	}
 	options.Command = spec.command
 	options.ListLimit = 50
 	if err := validate(options); err != nil {
@@ -294,6 +303,8 @@ const (
 
 // suppliedNames returns the supplied options that belong to groups. Names come
 // out in one fixed order, not argument order, so grouped messages are stable.
+// --params-file belongs to no group: every command accepts it, and the
+// options it supplies are checked here like command-line ones.
 func suppliedNames(o *Options, groups optionGroup) []string {
 	options := [...]struct {
 		name     string
@@ -315,6 +326,8 @@ func suppliedNames(o *Options, groups optionGroup) []string {
 		{"--secret-expiry", groupSecret, o.SecretExpiry != nil},
 		{"--secret-start", groupSecret, o.SecretStart != nil},
 		{"--secret-end", groupSecret, o.SecretEnd != nil},
+		{"--keyvault-uri", groupSecret, o.KeyVaultURI != nil},
+		{"--keyvault-secret-name", groupSecret, o.KeyVaultSecretName != nil},
 		{"--top", groupList, o.Top != nil},
 		{"--json", groupList, o.JSON},
 	}

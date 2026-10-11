@@ -77,6 +77,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				ok(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				graphtest.JSON(201, obj{"id": "sp", "appId": "client"}),
 			}
 			switch scenario {
 			case "patch-failure":
@@ -98,13 +99,23 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			if requests[0].Method != "POST" || requests[0].Path != "/v1.0/applications" {
 				t.Fatalf("request = %s %s", requests[0].Method, requests[0].Path)
 			}
-			if requests[1].Method != "PATCH" || requests[1].Path != "/v1.0/applications/object" {
-				t.Fatalf("request = %s %s", requests[1].Method, requests[1].Path)
+			if requests[1].Method != "POST" || requests[1].Path != "/v1.0/servicePrincipals" {
+				t.Fatalf("request = %s %s, want the service principal", requests[1].Method, requests[1].Path)
 			}
-			post, patch := decode(t, requests[0]), decode(t, requests[1])
+			if got := decode(t, requests[1])["appId"]; got != "client" {
+				t.Errorf("service principal body = %v", got)
+			}
+			if requests[2].Method != "PATCH" || requests[2].Path != "/v1.0/applications/object" {
+				t.Fatalf("request = %s %s", requests[2].Method, requests[2].Path)
+			}
+			post, patch := decode(t, requests[0]), decode(t, requests[2])
 			wantRedirects := arr{"https://example.com/Callback", "https://example.com/callback"}
 			if got := post["spa"].(obj)["redirectUris"]; !reflect.DeepEqual(got, wantRedirects) {
 				t.Errorf("redirectUris = %v", got)
+			}
+			userRead := obj{"resourceAppId": msGraphAppID, "resourceAccess": arr{obj{"id": userReadScopeID, "type": "Scope"}}}
+			if got := post["requiredResourceAccess"]; !reflect.DeepEqual(got, arr{userRead}) {
+				t.Errorf("POST requiredResourceAccess = %v", got)
 			}
 			if got := post["api"].(obj)["requestedAccessTokenVersion"]; got != 2.0 {
 				t.Errorf("POST requestedAccessTokenVersion = %v", got)
@@ -120,9 +131,15 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			if got := patch["identifierUris"]; !reflect.DeepEqual(got, arr{"api://client"}) {
 				t.Errorf("identifierUris = %v", got)
 			}
+			// The PATCH replaces the whole list: Graph User.Read must survive
+			// next to the app's own new scope.
+			ownScope := obj{"resourceAppId": "client", "resourceAccess": arr{obj{"id": scope["id"], "type": "Scope"}}}
+			if got := patch["requiredResourceAccess"]; !reflect.DeepEqual(got, arr{userRead, ownScope}) {
+				t.Errorf("PATCH requiredResourceAccess = %v", got)
+			}
 
 			stdout := strings.ReplaceAll(tio.stdout.String(), "\r\n", "\n")
-			if !strings.Contains(stdout, "AUTH_APP_ID=object\nAUTH_CLIENT_ID=client\n") {
+			if !strings.Contains(stdout, "AUTH_APP_ID=object\nAUTH_CLIENT_ID=client\n") || !strings.Contains(stdout, "AUTH_SP_ID=sp\n") {
 				t.Errorf("stdout lacks IDs:\n%s", stdout)
 			}
 			reportPath := filepath.Join(tio.env.ReportDir, "App.txt")
@@ -131,8 +148,8 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "scope-denied") {
 					t.Fatalf("err = %v", err)
 				}
-				if len(requests) != 2 {
-					t.Errorf("%d requests after the name check, want 2", len(requests))
+				if len(requests) != 3 {
+					t.Errorf("%d requests after the name check, want 3", len(requests))
 				}
 				if n := dirEntries(t, tio.env.ReportDir); n != 0 {
 					t.Errorf("%d files written", n)
@@ -173,13 +190,13 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(requests) != 3 {
-					t.Fatalf("%d requests after the name check, want 3", len(requests))
+				if len(requests) != 4 {
+					t.Fatalf("%d requests after the name check, want 4", len(requests))
 				}
-				if requests[2].Method != "POST" || requests[2].Path != "/v1.0/applications/object/addPassword" {
-					t.Fatalf("request = %s %s", requests[2].Method, requests[2].Path)
+				if requests[3].Method != "POST" || requests[3].Path != "/v1.0/applications/object/addPassword" {
+					t.Fatalf("request = %s %s", requests[3].Method, requests[3].Path)
 				}
-				credential := decode(t, requests[2])["passwordCredential"].(obj)
+				credential := decode(t, requests[3])["passwordCredential"].(obj)
 				if _, present := credential["startDateTime"]; present {
 					t.Error("startDateTime sent for a fixed lifetime")
 				}
@@ -212,9 +229,10 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 	}
 }
 
-func TestCreateWithoutRedirectsSendsEmptyRedirectList(t *testing.T) {
+func TestCreateWithoutRedirectsSendsEmptyRedirectListAndWarns(t *testing.T) {
+	tio := newTestIO(t, "")
 	f := graphtest.New(t, ok(obj{"value": arr{}}), org, raw(403, "creation-denied"))
-	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
+	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), tio.env)
 	if err == nil || !strings.Contains(err.Error(), "creation-denied") {
 		t.Fatalf("err = %v", err)
 	}
@@ -228,6 +246,40 @@ func TestCreateWithoutRedirectsSendsEmptyRedirectList(t *testing.T) {
 	}
 	if got := decode(t, requests[2])["spa"].(obj)["redirectUris"]; !reflect.DeepEqual(got, arr{}) {
 		t.Errorf("redirectUris = %v", got)
+	}
+	if got := tio.stderr.String(); got != noRedirectNotice+"\n" {
+		t.Errorf("stderr = %q", got)
+	}
+	if strings.Contains(tio.stdout.String(), "Warning") {
+		t.Errorf("warning on stdout: %q", tio.stdout.String())
+	}
+}
+
+// A failed service principal POST stops create before the scope and secret,
+// keeps the printed app IDs, and tells the operator how to finish by hand.
+func TestCreateServicePrincipalFailureStopsWithRecoveryHint(t *testing.T) {
+	tio := newTestIO(t, "")
+	f := graphtest.New(t,
+		ok(obj{"value": arr{}}),
+		org,
+		graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+		raw(400, "sp-replication-lag"))
+	err := create(context.Background(), options(t, workflowArgs...), f.Client(t), tio.env)
+	if err == nil || !strings.Contains(err.Error(), "sp-replication-lag") || isUsage(err) {
+		t.Fatalf("err = %v", err)
+	}
+	requests := f.Requests()
+	if len(requests) != 4 || requests[3].Path != "/v1.0/servicePrincipals" {
+		t.Fatalf("requests = %+v", requests)
+	}
+	if !strings.Contains(tio.stdout.String(), "AUTH_APP_ID=object\nAUTH_CLIENT_ID=client\n") {
+		t.Errorf("stdout lacks IDs: %q", tio.stdout.String())
+	}
+	if !strings.Contains(tio.stderr.String(), "az ad sp create --id client\n") {
+		t.Errorf("stderr lacks recovery hint: %q", tio.stderr.String())
+	}
+	if n := dirEntries(t, tio.env.ReportDir); n != 0 {
+		t.Errorf("%d files written", n)
 	}
 }
 
@@ -339,11 +391,13 @@ func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 // TestCreateOutputAndReportAreExact pins every printed line and the report
 // layout, so restructuring create cannot reorder or reword them.
 func TestCreateOutputAndReportAreExact(t *testing.T) {
+	sp := graphtest.JSON(201, obj{"id": "sp", "appId": "client"})
 	for _, tc := range []struct {
 		name       string
 		args       []string
 		responses  []graphtest.Response
 		wantStdout string // {report} is replaced with the report path
+		wantStderr string
 		wantReport string // {scope} is replaced with the generated scope ID
 	}{
 		{
@@ -353,6 +407,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				ok(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				sp,
 				raw(204, ""),
 				ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}),
 			},
@@ -360,8 +415,11 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				"  Supported account types: PersonalMicrosoftAccount\n" +
 				"  Redirect URI (SPA): https://example.com/Callback\n" +
 				"  Redirect URI (SPA): https://example.com/callback\n" +
+				"  API permission: Microsoft Graph User.Read (delegated)\n" +
 				"AUTH_APP_ID=object\n" +
 				"AUTH_CLIENT_ID=client\n" +
+				"Creating service principal (enterprise application)\n" +
+				"AUTH_SP_ID=sp\n" +
 				"Exposing API: adding scope 'api://client/read' (Admins and users, Enabled)\n" +
 				"Adding client secret 'App secret' to object\n" +
 				"Wrote details to {report}\n" +
@@ -369,6 +427,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			wantReport: "Application name:        App\n" +
 				"Application (client) ID: client\n" +
 				"Object ID:               object\n" +
+				"Service principal ID:    sp\n" +
 				"Directory (tenant) ID:   tenant\n" +
 				"Supported account types: PersonalMicrosoftAccount\n" +
 				"Application ID URI:      api://client\n" +
@@ -385,6 +444,8 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				"Secret value:            fake-one-time-secret\n" +
 				"Secret starts:           now\n" +
 				"Secret expires:          2028-05-28T16:30:45Z\n" +
+				"API permissions:         Microsoft Graph User.Read (delegated)\n" +
+				"                         api://client/read (delegated)\n" +
 				"Redirect URIs (SPA):     https://example.com/Callback\n" +
 				"                         https://example.com/callback\n",
 		},
@@ -395,28 +456,36 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				ok(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				sp,
 			},
 			wantStdout: "Creating application registration 'App'\n" +
 				"  Supported account types: AzureADMyOrg\n" +
+				"  API permission: Microsoft Graph User.Read (delegated)\n" +
 				"AUTH_APP_ID=object\n" +
 				"AUTH_CLIENT_ID=client\n" +
+				"Creating service principal (enterprise application)\n" +
+				"AUTH_SP_ID=sp\n" +
 				"Skipping API scope (pass --scope-name to expose an API)\n" +
 				"Skipping client secret (pass --create-secret to create one)\n" +
 				"Wrote details to {report}\n",
+			wantStderr: noRedirectNotice + "\n",
 			wantReport: "Application name:        App\n" +
 				"Application (client) ID: client\n" +
 				"Object ID:               object\n" +
+				"Service principal ID:    sp\n" +
 				"Directory (tenant) ID:   tenant\n" +
 				"Supported account types: AzureADMyOrg\n" +
+				"API permissions:         Microsoft Graph User.Read (delegated)\n" +
 				"Redirect URIs (SPA):     \n",
 		},
 		{
 			name: "custom secret dates from Graph",
-			args: []string{"--name", "App", "--create-secret", "--secret-start", "1/3/2028", "--secret-end", "2/3/2028"},
+			args: []string{"--name", "App", "--create-secret", "--secret-start", "1/3/2028", "--secret-end", "2/3/2028", "--redirect-urls", "http://localhost:5173/"},
 			responses: []graphtest.Response{
 				ok(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				sp,
 				ok(obj{
 					"keyId": keyID, "secretText": "fake-one-time-secret",
 					"startDateTime": "2028-03-01T00:00:00Z", "endDateTime": "2028-03-02T23:59:59.5Z",
@@ -424,8 +493,12 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			},
 			wantStdout: "Creating application registration 'App'\n" +
 				"  Supported account types: AzureADMyOrg\n" +
+				"  Redirect URI (SPA): http://localhost:5173/\n" +
+				"  API permission: Microsoft Graph User.Read (delegated)\n" +
 				"AUTH_APP_ID=object\n" +
 				"AUTH_CLIENT_ID=client\n" +
+				"Creating service principal (enterprise application)\n" +
+				"AUTH_SP_ID=sp\n" +
 				"Skipping API scope (pass --scope-name to expose an API)\n" +
 				"Adding client secret 'App secret' to object\n" +
 				"Wrote details to {report}\n" +
@@ -433,6 +506,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			wantReport: "Application name:        App\n" +
 				"Application (client) ID: client\n" +
 				"Object ID:               object\n" +
+				"Service principal ID:    sp\n" +
 				"Directory (tenant) ID:   tenant\n" +
 				"Supported account types: AzureADMyOrg\n" +
 				"Secret description:      App secret\n" +
@@ -440,7 +514,8 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				"Secret value:            fake-one-time-secret\n" +
 				"Secret starts:           2028-03-01T00:00:00Z\n" +
 				"Secret expires:          2028-03-02T23:59:59.5Z\n" +
-				"Redirect URIs (SPA):     \n",
+				"API permissions:         Microsoft Graph User.Read (delegated)\n" +
+				"Redirect URIs (SPA):     http://localhost:5173/\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -453,12 +528,12 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			if got, want := tio.stdout.String(), strings.ReplaceAll(tc.wantStdout, "{report}", reportPath); got != want {
 				t.Errorf("stdout:\n got %q\nwant %q", got, want)
 			}
-			if tio.stderr.Len() != 0 {
-				t.Errorf("stderr = %q", tio.stderr.String())
+			if got := tio.stderr.String(); got != tc.wantStderr {
+				t.Errorf("stderr:\n got %q\nwant %q", got, tc.wantStderr)
 			}
 			scopeID := ""
-			if requests := f.Requests(); len(requests) > 3 && requests[3].Method == "PATCH" {
-				scopeID, _ = decode(t, requests[3])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
+			if requests := f.Requests(); len(requests) > 4 && requests[4].Method == "PATCH" {
+				scopeID, _ = decode(t, requests[4])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
 			}
 			if got, want := readReport(t, reportPath), strings.ReplaceAll(tc.wantReport, "{scope}", scopeID); got != want {
 				t.Errorf("report:\n got %q\nwant %q", got, want)

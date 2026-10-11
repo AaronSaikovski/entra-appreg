@@ -15,6 +15,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+	"github.com/AaronSaikovski/entra-appreg/internal/keyvault"
 )
 
 const (
@@ -167,5 +168,25 @@ func TestStaticCredentialFormattingRedactsToken(t *testing.T) {
 	var tc azcore.TokenCredential = c
 	if s := fmt.Sprintf("%v %+v %#v", tc, tc, tc); strings.Contains(s, opaqueToken) {
 		t.Fatal(s)
+	}
+}
+
+// The Key Vault token uses the same single-process path with its own scope
+// and its own fixed failure message.
+func TestKeyVaultTokenRequestsVaultScopeWithFixedMessage(t *testing.T) {
+	f := &fixture{token: opaqueToken}
+	cred, err := tokenWith(context.Background(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok, _ := cred.GetToken(context.Background(), policy.TokenRequestOptions{}); tok.Token != opaqueToken {
+		t.Fatalf("got %q", tok.Token)
+	}
+	if got := strings.Join(f.calls, "|"); got != "lookpath az|get-token https://vault.azure.net/.default" {
+		t.Fatalf("calls %v", got)
+	}
+	f = &fixture{tokenErr: errors.New(privateOutput)}
+	if _, err := tokenWith(context.Background(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken); err == nil || err.Error() != msgNoKeyVaultToken {
+		t.Fatalf("err = %v", err)
 	}
 }

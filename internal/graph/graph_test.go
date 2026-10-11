@@ -551,6 +551,27 @@ func TestAddPasswordPostsCredentialAndRequiresReply(t *testing.T) {
 	}
 }
 
+func TestCreateServicePrincipalPostsAppIDAndRequiresID(t *testing.T) {
+	f := graphtest.New(t,
+		graphtest.JSON(201, map[string]any{"id": "sp", "appId": "client"}),
+		graphtest.JSON(201, map[string]any{"appId": "client"}),
+		raw(400, "not replicated"))
+	client := f.Client(t)
+	if id, err := client.CreateServicePrincipal(t.Context(), "client"); err != nil || id != "sp" {
+		t.Fatalf("got %q, %v", id, err)
+	}
+	if _, err := client.CreateServicePrincipal(t.Context(), "client"); err == nil || err.Error() != "Graph response requires an object with string 'id'" {
+		t.Errorf("reply without id: got %v", err)
+	}
+	if _, err := client.CreateServicePrincipal(t.Context(), "client"); err == nil || err.Error() != "POST /v1.0/servicePrincipals failed with HTTP 400: not replicated" {
+		t.Errorf("status error: got %v", err)
+	}
+	r := f.Requests()[0]
+	if r.Method != "POST" || r.Path != "/v1.0/servicePrincipals" || !strings.Contains(string(r.Body), `"appId":"client"`) {
+		t.Errorf("request = %s %s %s", r.Method, r.Path, r.Body)
+	}
+}
+
 func TestNewForBaseRejectsUntrustedBases(t *testing.T) {
 	for _, base := range []string{
 		"http://graph.microsoft.com/v1.0",
