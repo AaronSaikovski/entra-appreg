@@ -42,7 +42,7 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 		fmt.Fprintln(stdout, cli.HelpText(inv.Topic))
 		return exitOK
 	case cli.KindVersion:
-		fmt.Fprintln(stdout, "entra-appreg "+cli.Version)
+		fmt.Fprintln(stdout, "entra-appreg "+cli.Version())
 		return exitOK
 	case cli.KindNoArguments:
 		fmt.Fprint(stderr, "No arguments given. Here is how to use this program:\n\n")

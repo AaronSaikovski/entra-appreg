@@ -391,7 +391,7 @@ func TestHelpTextUsesBinaryNameAndGoCredential(t *testing.T) {
 		}
 	}
 	general := HelpText(TopicGeneral)
-	if !strings.HasPrefix(general, "entra-appreg "+Version+" - manage ") ||
+	if !strings.HasPrefix(general, "entra-appreg "+Version()+" - manage ") ||
 		!strings.Contains(general, "Azure SDK for Go (azidentity) AzureCLICredential") {
 		t.Fatalf("general help heading/authentication text wrong")
 	}

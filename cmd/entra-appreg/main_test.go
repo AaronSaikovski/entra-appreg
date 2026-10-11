@@ -48,7 +48,7 @@ func TestExitCodes(t *testing.T) {
 		stderr string // substring
 	}{
 		{args: []string{}, code: 2, stdout: "USAGE", stderr: "No arguments given."},
-		{args: []string{"--version"}, code: 0, stdout: "entra-appreg " + cli.Version + "\n"},
+		{args: []string{"--version"}, code: 0, stdout: "entra-appreg " + cli.Version() + "\n"},
 		{args: []string{"list", "--top", "0"}, code: 2, stderr: "--top must be a positive whole number or 'all', got: 0"},
 		{args: []string{"--appid", " "}, code: 2, stderr: "--appid cannot be blank"},
 		{args: []string{"delete"}, code: 2},
@@ -76,7 +76,7 @@ func TestVersionOutputIsExact(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if want := "entra-appreg " + cli.Version + "\n"; stdout != want {
+	if want := "entra-appreg " + cli.Version() + "\n"; stdout != want {
 		t.Errorf("got %q, want %q", stdout, want)
 	}
 }

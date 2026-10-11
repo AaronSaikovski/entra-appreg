@@ -1,6 +1,6 @@
 # entra-appreg
 
-**Version 0.0.1 (testing).** A Go CLI for Microsoft Entra ID single-page application (SPA) registrations.
+**In testing (first release: v0.0.1).** A Go CLI for Microsoft Entra ID single-page application (SPA) registrations. `entra-appreg --version` reports the git tag the binary was built from.
 
 | Command | What it does |
 |---|---|
@@ -20,7 +20,7 @@ The CLI signs in through your existing **`az login`** session, using the Azure S
 **From source.** You need [Go](https://go.dev/dl/) matching the `go` directive in `go.mod`; a newer Go downloads the right toolchain automatically. The first build compiles the large Graph SDK, which can take several minutes and several GB of RAM.
 
 ```sh
-go build -o bin/entra-appreg ./cmd/entra-appreg    # or: task build
+task build                         # bin/entra-appreg, version from `git describe --tags`
 bin/entra-appreg --version
 ```
 
@@ -223,8 +223,8 @@ The Go module `github.com/AaronSaikovski/entra-appreg` is at the repository root
 | Package | Role |
 |---|---|
 | `cmd/entra-appreg` | Entry point: parse → delete terminal check → sign in → Graph client → command → exit code. |
-| `internal/cli` | Strict parsing, Cobra flags, validation, help text; `version.go` holds `Version`. |
-| `internal/auth` | Azure CLI login check and token, behind a 10-second deadline. |
+| `internal/cli` | Strict parsing, Cobra flags, validation, help text; `version.go` resolves the build version (see [Versioning](#versioning)). |
+| `internal/auth` | Checks `az` is on `PATH`, then gets one token from Azure CLI within 10 seconds. |
 | `internal/graph` | Graph client: no retries or redirects, raw error bodies, next-page link checks. |
 | `internal/graphtest` | Local fake Graph server for tests. |
 | `internal/app` | The four commands, plus scope and secret-lifetime rules. |
@@ -233,7 +233,7 @@ The Go module `github.com/AaronSaikovski/entra-appreg` is at the repository root
 Common tasks ([Task](https://taskfile.dev) is optional):
 
 ```sh
-task check        # gofmt, vet (native + GOOS=windows), build, tests, binary smoke
+task check        # gofmt, vet (native + GOOS=windows), build, tests, binary smoke incl. --version == git describe
 task test         # go test -v ./...
 task run -- list --help
 task staticcheck  # pinned Go-1.27-compatible staticcheck
@@ -255,15 +255,26 @@ Tests are offline. They use the fake Graph server, a fake Azure CLI runner and c
 | [`ci.yml`](.github/workflows/ci.yml) | All pushes, PRs, manual | Linux/macOS/Windows: gofmt, vet, build, tests, and a smoke test of the built binary (version, all help topics, exit codes). |
 | [`build.yml`](.github/workflows/build.yml) | Push to `main`, PRs | vet, a `go fmt` diff check, build, and `goreleaser check`. |
 | [`test.yml`](.github/workflows/test.yml) | Push/PR to `main` | `go test -race`, vet, staticcheck, govulncheck. |
-| [`release.yml`](.github/workflows/release.yml) | `v*` tags | Checks the tag against `Version`, runs gofmt, vet and the tests, then GoReleaser ([`.goreleaser.yaml`](.goreleaser.yaml)). |
+| [`release.yml`](.github/workflows/release.yml) | `v*` tags | Checks that a build stamped with the tag reports it, runs gofmt, vet and the tests, then GoReleaser ([`.goreleaser.yaml`](.goreleaser.yaml)). |
 
 All workflows use the Go version from `go.mod`. `staticcheck.conf` turns off only the style check for error-message format, because the CLI's user-facing messages are intentionally capitalised and punctuated.
 
+### Versioning
+
+The version comes from **git tags**; no version number is stored in the source. The build stamps it into the binary via `-ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=<tag>"`. `--version` and the help heading print it without the leading `v`.
+
+| How it was built | `--version` shows |
+|---|---|
+| GoReleaser release from tag `v0.0.1` | `0.0.1` |
+| `task build` / `task release` / `task run` | `git describe --tags --always --dirty`, e.g. `0.0.1` on the tag, or `0.0.1-3-gabc1234-dirty` between tags |
+| `go install github.com/AaronSaikovski/entra-appreg/cmd/entra-appreg@v0.0.1` | `0.0.1` (module version Go records) |
+| plain `go build` in a git checkout | Go's VCS pseudo-version, e.g. `0.0.2-0.2026…-abc123+dirty` |
+| no tag or build info | `dev` |
+
 To release:
 
-1. Update `Version` in `internal/cli/version.go`, the version line in this README, and `CHANGELOG.md`.
-2. Run `task check`, then commit.
-3. Tag and push: `git tag -a v0.0.1 -m "Release v0.0.1" && git push origin v0.0.1`. The workflow fails if the tag doesn't equal `v` + `Version`. A tag with a hyphen (e.g. `v0.1.0-rc.1`) publishes a prerelease.
+1. Update `CHANGELOG.md` (move Unreleased entries under the new version), run `task check`, then commit.
+2. Tag and push: `git tag -a v0.0.1 -m "Release v0.0.1" && git push origin v0.0.1`. The tag must be semver with a `v` prefix; a hyphenated tag (e.g. `v0.1.0-rc.1`) publishes a prerelease.
 
 For a local dry run, use `goreleaser release --snapshot --clean`; output goes to `dist/`, which is ignored by git.
 

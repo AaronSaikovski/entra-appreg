@@ -30,11 +30,12 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Validate tag against internal/cli/version.go
+      - name: Check the tag is injected as the version
         run: |
-          version=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/version.go)
-          if [[ "${GITHUB_REF_NAME#v}" != "$version" ]]; then
-            echo "Tag $GITHUB_REF_NAME must equal v$version (internal/cli/version.go). Update the version before tagging." >&2
+          go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=$GITHUB_REF_NAME" -o "$RUNNER_TEMP/entra-appreg" ./cmd/entra-appreg
+          actual=$("$RUNNER_TEMP/entra-appreg" --version)
+          if [[ "$actual" != "entra-appreg ${GITHUB_REF_NAME#v}" ]]; then
+            echo "Expected 'entra-appreg ${GITHUB_REF_NAME#v}', got '$actual'" >&2
             exit 1
           fi
 

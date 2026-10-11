@@ -66,7 +66,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 | Path | Purpose |
 |---|---|
 | `cmd/entra-appreg/` | `main` plus testable `run(args, stdin *os.File, stdout io.Writer, stderr *os.File) int`. Stdin and stderr are `*os.File` so `term.IsTerminal` works. |
-| `internal/cli/` | Parsing, validation, help text (`help.go`), version (`version.go`). |
+| `internal/cli/` | Parsing, validation, help text (`help.go`), build version (`version.go`). |
 | `internal/auth/` | `az` presence check and the single Azure CLI token request. |
 | `internal/graph/` | Graph client, `StatusError`, paging, next-link safety. |
 | `internal/graphtest/` | Loopback Graph fixture. Non-test file; import it only from tests. |
@@ -78,7 +78,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 Run from the repo root. `task check` is the canonical gate; it must pass after every change:
 
 ```sh
-task check            # gofmt -l, go vet, GOOS=windows go vet, go build, go test, then a binary smoke
+task check            # gofmt -l, go vet, GOOS=windows go vet, go build, go test, then a binary smoke (--version must equal git describe)
 task test             # go test -v ./...
 task run -- list --help
 task build            # → bin/entra-appreg[.exe]
@@ -91,7 +91,7 @@ Without Task:
 
 ```sh
 test -z "$(gofmt -l .)" && go vet ./... && GOOS=windows go vet ./... && go build ./... && go test ./...
-go build -o bin/entra-appreg ./cmd/entra-appreg && bin/entra-appreg --version
+go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=$(git describe --tags --always --dirty)" -o bin/entra-appreg ./cmd/entra-appreg && bin/entra-appreg --version
 bin/entra-appreg list --top 0          # must exit 2 before auth
 bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 ```
@@ -125,7 +125,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 ## Important Files
 
 - `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate.
-- `internal/cli/version.go`: `const Version`, the only version source. It is used by `--version`, the help heading, `main_test.go`, and the CI smoke regex, and `release.yml` requires the tag to equal `v` + `Version`. The README "Version" line must be bumped by hand.
+- `internal/cli/version.go`: versions come only from git tags. The unexported `version` var is set at link time with `-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=<tag>` by GoReleaser (`{{ .Version }}`) and the Taskfile (`git describe --tags --always --dirty`). `cli.Version()` strips a leading `v` and falls back to the Go build-info module version, then `dev`. Never hard-code a version number. The help heading is built at call time in `HelpText`, and the CI smoke injects `v0.0.0-ci` and checks for it.
 - `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
 - `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
 - `Taskfile.yml`: dev tasks.
@@ -134,7 +134,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
   - `ci.yml`: runs on Linux, macOS and Windows: gofmt, vet, build, test, and a Python binary smoke.
   - `build.yml`: vet, fmt diff, build, and `goreleaser check`.
   - `test.yml`: race tests, vet, staticcheck (pinned to a Go-1.27-compatible commit), and govulncheck.
-  - `release.yml`: tag/version guard, quality gates, and GoReleaser.
+  - `release.yml`: checks that a build stamped with the tag reports it, runs the quality gates, then GoReleaser.
 - `.gitignore`: ignores `*.txt` (reports may contain plaintext secrets), `/bin/`, `/build/`, `/dist/` and root binaries.
 
 ## Runtime/Tooling Preferences
@@ -143,7 +143,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 ## Testing & QA
 
-- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 91 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 92 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
 - **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
   - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
   - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.

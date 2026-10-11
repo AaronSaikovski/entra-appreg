@@ -12,11 +12,12 @@ func HelpText(t HelpTopic) string {
 	case TopicDelete:
 		return deleteHelp
 	default:
-		return generalHelp
+		return "entra-appreg " + Version() + generalHelp
 	}
 }
 
-const generalHelp = "entra-appreg " + Version + ` - manage Microsoft Entra ID app registrations for single-page apps
+// generalHelp follows the "entra-appreg <version>" heading added by HelpText.
+const generalHelp = ` - manage Microsoft Entra ID app registrations for single-page apps
 
 USAGE
   entra-appreg [command] [options]
@@ -153,9 +154,9 @@ USAGE
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
-  AzureCLICredential uses the active Azure CLI context. Your account
-  needs permission to modify
-  the target app. No AZURE_* client-secret settings are required.
+  AzureCLICredential uses the active Azure CLI context. Your account needs
+  permission to modify the target app. No AZURE_* client-secret settings
+  are required.
 
 REQUIRED
   --appid <id>
@@ -210,9 +211,9 @@ USAGE
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
-  AzureCLICredential uses the active Azure CLI context. Your account
-  needs permission to read
-  app registrations. No AZURE_* client-secret settings are required.
+  AzureCLICredential uses the active Azure CLI context. Your account needs
+  permission to read app registrations. No AZURE_* client-secret settings
+  are required.
 
 OPTIONS
   --name <text>

@@ -15,7 +15,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X github.com/AaronSaikovski/entra-appreg/internal/cli.version={{ .Version }}
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ignore:

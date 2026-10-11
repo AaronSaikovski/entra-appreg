@@ -6,6 +6,15 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- **The version now comes from git tags.** `internal/cli/version.go` no longer hard-codes `0.0.1`.
+  - The unexported `version` is injected with `-ldflags -X …/internal/cli.version=<tag>`, by GoReleaser (`{{ .Version }}`) and by Taskfile `build`/`release`/`run`/`check` (`git describe --tags --always --dirty`). Without it, `cli.Version()` falls back to Go's build-info module version, then `dev`.
+  - `release.yml` no longer compares the tag with a source constant; it builds with the tag and checks that `--version` reports it. The CI smoke injects `v0.0.0-ci` and checks for it.
+  - New `TestResolveVersionPrefersLinkedTagThenBuildInfoThenDev`.
+- **Docs and help text synced.** The help AUTHENTICATION sections had still said `create` "discovers and pins" the tenant; they now describe one `az` call in the active context, with the tenant read from Graph. README and AGENTS.md were updated for the single `az` call, the error-body cap, the create step order, versioning, and the test count.
+- **Verification on macOS:**
+  - `task check`, staticcheck and actionlint (all workflows) pass, and `goreleaser check` passes.
+  - `task build` → `entra-appreg 1.0.1-5-gf5a00f1-dirty`; `-X …version=v0.0.1` → `entra-appreg 0.0.1`; a plain `go build` → a VCS pseudo-version; a GoReleaser snapshot → `entra-appreg 1.0.1-SNAPSHOT-f5a00f1`.
+  - The old Rust-era `v1.0.1` tag is the nearest tag until `v0.0.1` is pushed.
 - Performance and memory fixes:
   - **Auth starts Azure CLI once instead of twice.** The `az account show` pre-check is gone. `exec.LookPath` checks that `az` is installed without starting a process, and azidentity's `AzureCLICredential` gets the token for the active context. `create` now takes the report's tenant ID from Graph `/organization` (msgraph-sdk-go, same token) after validation and before the POST, so the recorded tenant always matches the token.
   - **Auth messages.** Signed-out and expired-token failures now share one fixed message, because azidentity reports them the same way. The invalid-tenant and could-not-run messages no longer apply.
