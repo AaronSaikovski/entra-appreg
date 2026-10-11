@@ -51,8 +51,8 @@ HELP
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
   Uses the official Azure SDK for Go (azidentity) AzureCLICredential with your current
-  Azure CLI login. Create discovers and pins the current tenant; list,
-  expose-api, and delete use the active Azure CLI context.
+  Azure CLI login: one az call per command, in the active az context.
+  The tenant shown or recorded is read from Microsoft Graph with that token.
   Your account needs permission for the requested operation. No
   AZURE_* client-secret settings are required. Help/version need no login.
 
@@ -68,8 +68,8 @@ USAGE
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
-  AzureCLICredential reuses that login, discovers the current tenant,
-  and pins authentication to it. Your account needs permission to manage
+  AzureCLICredential reuses that login in the active az context; the
+  report's tenant ID is read from Graph. Your account needs permission to manage
   app registrations. No AZURE_* client-secret settings are required.
 
 REQUIRED (when a new app is created)
@@ -153,8 +153,8 @@ USAGE
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
-  AzureCLICredential uses the active Azure CLI context (create instead
-  discovers and pins its tenant). Your account needs permission to modify
+  AzureCLICredential uses the active Azure CLI context. Your account
+  needs permission to modify
   the target app. No AZURE_* client-secret settings are required.
 
 REQUIRED
@@ -210,8 +210,8 @@ USAGE
 
 AUTHENTICATION
   Requires Azure CLI (az) and an existing sign-in: az login.
-  AzureCLICredential uses the active Azure CLI context (create instead
-  discovers and pins its tenant). Your account needs permission to read
+  AzureCLICredential uses the active Azure CLI context. Your account
+  needs permission to read
   app registrations. No AZURE_* client-secret settings are required.
 
 OPTIONS

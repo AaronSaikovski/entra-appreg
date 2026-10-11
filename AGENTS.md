@@ -41,21 +41,22 @@ Requests are sequential. The context is `context.Background()`; only auth has an
   - `describe()` wraps all other failures.
   - `GetApplication` tries the object ID first, then the `appId` alternate key, but only after a 404. Two 404s return `(nil, nil)`.
   - `ApplicationPages` rejects repeated next links. `validateNextLink` requires the same scheme, host and port, no userinfo or fragment, and a path under `/v1.0/`. `internal/graph/export_test.go` exposes unexported helpers to the external `graph_test` package.
-  - `graph.MissingFieldError` and `cli.Usagef` are the single shared helpers for missing-field and usage errors. `graph.Scope` is the only Graph scope constant. `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`.
+  - `graph.MissingFieldError` is the one helper for "Graph response requires … '<field>'" errors, and `graph.Scope` is the only Graph scope constant.
   - The base URL is fixed. `NewForBase` exists only for loopback tests; do not add an endpoint override.
 - **Backing-store rule.** msgraph models fetched from Graph serialize only fields changed after the fetch.
   - Build every POST/PATCH body from fresh `models.New…()` objects. Never mutate and resend a fetched model.
   - `expose.go` `copyAPI`/`copyScope` show the pattern. Call each setter only when the fetched getter is non-nil, and copy `AdditionalData` with `maps.Clone`.
 - **`internal/app`: the workflows.**
-  - `create` sequence:
-    1. Optional lookup.
-    2. Validate (`planCreate`): name → audience → redirects → exact-string dedup → scope → lifetime. The result is a `createPlan`; later steps (`checkNameAvailable`, `postApplication`, `addScope`, `addSecret`, `reportContents`, `writeReport`) take it in this order.
-    3. Duplicate-name preflight: a match is a usage error.
-    4. POST.
-    5. Print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately.
-    6. Scope PATCH.
-    7. `addPassword`.
-    8. Report.
+  - `create` sequence, each step taking the validated `createPlan`:
+    1. Optional `--appid` lookup (`applicationExists`). A found app means exit 0 with nothing changed.
+    2. Validate (`planCreate`): name → audience → redirects → exact-string dedup → scope → lifetime.
+    3. Duplicate-name preflight (`checkNameAvailable`). A match is a usage error.
+    4. Tenant lookup (`currentTenant`). A failure stops the command before anything is created.
+    5. POST (`postApplication`), then print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately.
+    6. Scope PATCH (`addScope`).
+    7. `addPassword` (`addSecret`).
+    8. Report (`reportContents` builds the text without side effects; `writeReport` writes it).
+  - `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`; build usage errors with `cli.Usagef`.
   - `list`: `/organization` must return exactly one org. In `--json` mode stdout is only the JSON array; tenant lines and notices go to stderr. Text output quotes names with `strconv.Quote`.
   - `delete`: resolves the target before prompting. The prompt goes to stderr with quoted fields. Only `yes\n` or `yes\r\n` confirms; EOF cancels with exit 0.
 - **`internal/report`**: sanitizes the name. Spaces become `-`. Windows reserved device names get a `_` prefix (`NUL` → `_NUL.txt`). The file is claimed with `O_EXCL` and mode 0600; on collision the name gets a `-1`, `-2`, … suffix. Reports go to the current directory and are never overwritten.
@@ -66,7 +67,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 |---|---|
 | `cmd/entra-appreg/` | `main` plus testable `run(args, stdin *os.File, stdout io.Writer, stderr *os.File) int`. Stdin and stderr are `*os.File` so `term.IsTerminal` works. |
 | `internal/cli/` | Parsing, validation, help text (`help.go`), version (`version.go`). |
-| `internal/auth/` | Azure CLI login check and token. |
+| `internal/auth/` | `az` presence check and the single Azure CLI token request. |
 | `internal/graph/` | Graph client, `StatusError`, paging, next-link safety. |
 | `internal/graphtest/` | Loopback Graph fixture. Non-test file; import it only from tests. |
 | `internal/app/` | Workflows plus `scope.go`/`lifetime.go` rules. |
@@ -82,7 +83,8 @@ task test             # go test -v ./...
 task run -- list --help
 task build            # → bin/entra-appreg[.exe]
 task release          # CGO_ENABLED=0 -trimpath -ldflags="-s -w" → bin/
-task staticcheck | task seccheck   # optional, @latest via go run
+task staticcheck      # pinned Go-1.27-compatible staticcheck commit
+task seccheck         # govulncheck@latest
 ```
 
 Without Task:
@@ -125,7 +127,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 - `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate.
 - `internal/cli/version.go`: `const Version`, the only version source. It is used by `--version`, the help heading, `main_test.go`, and the CI smoke regex, and `release.yml` requires the tag to equal `v` + `Version`. The README "Version" line must be bumped by hand.
 - `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
-- `go.mod`: `go 1.27.2`. Main direct deps: cobra/pflag, azidentity/azcore, msgraph-sdk-go(-core), kiota-http/abstractions, uuid, x/term.
+- `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
 - `Taskfile.yml`: dev tasks.
 - `.goreleaser.yaml`: release builds and archives. Validate it with `goreleaser check`. `staticcheck.conf` disables only the error-string style checks.
 - `.github/workflows/`: all workflows use `go-version-file: go.mod`.
@@ -141,7 +143,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 ## Testing & QA
 
-- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. 78 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 91 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
 - **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
   - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
   - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.
