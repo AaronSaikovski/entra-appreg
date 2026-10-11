@@ -93,11 +93,17 @@ func TestCreateStoresSecretInKeyVaultAndReportsIt(t *testing.T) {
 		t.Errorf("secret leaked to stdout:\n%s", stdout)
 	}
 	report := readReport(t, filepath.Join(tio.env.ReportDir, "App.txt"))
-	want := "Secret expires:          2028-05-28T16:30:45Z\n" +
+	want := "Secret value:            (stored in Key Vault: https://my-vault.vault.azure.net/secrets/app-secret/v1)\n" +
+		"Secret starts:           now\n" +
+		"Secret expires:          2028-05-28T16:30:45Z\n" +
 		"Key Vault secret:        app-secret in https://my-vault.vault.azure.net\n" +
 		"Key Vault secret ID:     https://my-vault.vault.azure.net/secrets/app-secret/v1\n"
 	if !strings.Contains(report, want) {
 		t.Errorf("report lacks %q:\n%s", want, report)
+	}
+	// Once Key Vault holds the secret, no plaintext copy stays at rest.
+	if strings.Contains(report, "fake-one-time-secret") || strings.Contains(stdout, "plain text") {
+		t.Errorf("plaintext secret kept or announced:\n%s\n%s", report, stdout)
 	}
 }
 

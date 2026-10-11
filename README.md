@@ -155,7 +155,7 @@ Examples:
 # Scope with user consent, no secret
 entra-appreg create --name "My SPA" --redirect-urls "http://localhost:5173/auth/callback,https://example.com/auth/callback" --scope-name access_as_user --scope-consent users
 
-# Client secret, also stored in Key Vault (the report still contains it)
+# Client secret stored only in Key Vault (the report records its Key Vault ID, not the value)
 entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --keyvault-uri https://my-vault.vault.azure.net --keyvault-secret-name backend-client-secret
 
 # Client secret (the report contains it in plaintext)
@@ -173,7 +173,7 @@ With `--create-secret`, add both `--keyvault-uri https://<vault-name>.vault.azur
 - **Sign-in.** A Key Vault token comes from a second `az` call, made after the read-only checks and before the app is created, so a missing token changes nothing. The vault must be in the tenant of your active `az login`. The SDK handles Key Vault's challenge and checks that the challenge comes from a `vault.azure.net` resource.
 - **Permission.** Your `az login` identity needs the **Key Vault Secrets Officer** role on the vault. See [Key Vault permissions](#key-vault-permissions).
 - **What is stored.** The secret value, with `exp` set to the secret's expiry, `nbf` set to a future custom start date, and tags `entra-client-id` and `entra-key-id`. If the name already exists, Key Vault adds a new version. A soft-deleted secret with the same name fails with HTTP 409.
-- **Output.** stdout prints `Key Vault secret ID: <version id>`, and the report adds `Key Vault secret:` and `Key Vault secret ID:` lines. The report **still contains the plaintext secret**.
+- **Output.** stdout prints `Key Vault secret ID: <version id>`, and the report adds `Key Vault secret:` and `Key Vault secret ID:` lines. Once Key Vault confirms the store, the report **does not contain the secret**: `Secret value:` reads `(stored in Key Vault: <version id>)`.
 - **Failure.** If storing fails after the secret is created, the report records `Key Vault secret ID: (not stored)` and keeps the secret, stderr says so, and the command exits 1. There are no retries; each request has a 10-second timeout and redirects aren't followed.
 
 ##### Key Vault permissions
@@ -268,7 +268,7 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
   - A successful run never prints the secret to the terminal.
   - If writing the report fails, the whole report, including the secret, is printed to stdout so it isn't lost, and the command exits 1.
   - If Graph doesn't return the secret's `keyId`, the report records `(not returned by Graph)` and keeps the secret, and the command exits 1.
-  - Move secrets to a secure store such as Key Vault (`--keyvault-uri`), then delete the report. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
+  - With `--keyvault-uri`, a successfully stored secret is left out of the report (see [Store the secret in Key Vault](#store-the-secret-in-key-vault)). Without it, move the secret to a secure store and delete the report. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
 
 | Exit | Meaning |
 |---|---|

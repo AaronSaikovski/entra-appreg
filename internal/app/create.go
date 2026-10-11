@@ -140,7 +140,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 	}
 
 	contents := reportContents(plan, tenantID, objectID, clientID, spID, scope, secret)
-	if err := writeReport(env, plan.name, contents, secret != nil); err != nil {
+	if err := writeReport(env, plan.name, contents, secret != nil && !storedInVault(plan, secret)); err != nil {
 		return err
 	}
 	var keyErr error
@@ -148,6 +148,12 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 		keyErr = errors.New("Graph's addPassword response had a missing or invalid keyId; the secret value was preserved in the report.")
 	}
 	return errors.Join(keyErr, vaultErr)
+}
+
+// storedInVault reports whether Key Vault confirmed storing the secret, in
+// which case the report omits its value.
+func storedInVault(plan createPlan, secret *createdSecret) bool {
+	return plan.keyVault != nil && secret.vaultID != "" && secret.vaultID != "(not stored)"
 }
 
 // applicationExists looks up --appid. An existing application makes create a
@@ -450,8 +456,13 @@ func reportContents(plan createPlan, tenantID, objectID, clientID, spID string, 
 		}
 	}
 	if secret != nil {
+		value := secret.value
+		if storedInVault(plan, secret) {
+			// No plaintext copy at rest once Key Vault holds the secret.
+			value = "(stored in Key Vault: " + secret.vaultID + ")"
+		}
 		fmt.Fprintf(&b, "Secret description:      %s\nSecret ID:               %s\nSecret value:            %s\nSecret starts:           %s\nSecret expires:          %s\n",
-			secret.description, secret.keyID, secret.value, secret.starts, secret.expires)
+			secret.description, secret.keyID, value, secret.starts, secret.expires)
 		if plan.keyVault != nil {
 			fmt.Fprintf(&b, "Key Vault secret:        %s in %s\nKey Vault secret ID:     %s\n", plan.keyVault.name, plan.keyVault.uri, secret.vaultID)
 		}

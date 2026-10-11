@@ -11,11 +11,13 @@ env:
 vars:
   # Build metadata linked into package main (cmd/entra-appreg/main.go).
   # VERSION is the git tag without its leading "v" (e.g. 0.0.1, or 0.0.1-3-gabc1234-dirty between tags).
+  # Only [A-Za-z0-9._+-] is accepted: git tag names may contain shell
+  # metacharacters, and these values are templated into shell commands.
   GIT_DESCRIBE:
-    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+    sh: v=$(git describe --tags --always --dirty 2>/dev/null || echo dev); case "$v" in *[!A-Za-z0-9._+-]*) echo invalid-version ;; *) echo "$v" ;; esac
   VERSION: '{{trimPrefix "v" .GIT_DESCRIBE}}'
   COMMIT:
-    sh: git rev-parse --short HEAD 2>/dev/null || echo none
+    sh: c=$(git rev-parse --short HEAD 2>/dev/null || echo none); case "$c" in *[!0-9a-f]*) echo none ;; *) echo "$c" ;; esac
   DATE: '{{dateInZone "2006-01-02T15:04:05Z" now "UTC"}}'
   LDFLAGS: -X main.version={{.VERSION}} -X main.commit={{.COMMIT}} -X main.date={{.DATE}}
 

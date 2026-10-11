@@ -6,6 +6,12 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- **Security review fixes:**
+  - **Rust build output untracked.** `target/` (about 2,000 artifacts that embedded local paths) was removed from the index and added to `.gitignore`. The unused `cmd/entra-appreg/get_version.sh` was deleted. The files remain in the pushed `go-dev` history until that branch is squashed or rebased.
+  - **No plaintext secret after a Key Vault store.** Once Key Vault confirms the store, the report writes `Secret value: (stored in Key Vault: <id>)` and drops the plain-text notice. The value is kept only if the store failed.
+  - **Taskfile version injection.** `git describe` and commit output are now accepted only if they match `[A-Za-z0-9._+-]` / hex, because tag names can carry shell metacharacters into the templated commands.
+  - **Release workflow pinned.** `release.yml` pins checkout, setup-go and goreleaser-action to commit SHAs, and goreleaser to `v2.18.3`.
+  - Verification on macOS: `task check` and actionlint pass. The Key Vault success test now asserts that the secret value is absent from the report and that no plain-text notice is printed.
 - **Store the new client secret in Azure Key Vault**: `create --create-secret --keyvault-uri https://<vault>.vault.azure.net --keyvault-secret-name <name>`.
   - Uses the Azure SDK for Go `azsecrets` client (new direct dependency `sdk/security/keyvault/azsecrets` v1.5.0), following Microsoft's Key Vault Go quickstart. The quickstart's `DefaultAzureCredential` is replaced by `AzureCLICredential`, and its deprecated `sdk/keyvault` import path by the current one.
   - The SDK pipeline has retries disabled and runs on a 10 s, no-redirect `http.Client`. Challenge authentication and the challenge-resource check stay on.
