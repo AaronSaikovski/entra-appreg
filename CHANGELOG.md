@@ -4,6 +4,10 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ## Unreleased
 
+### Fixed
+
+- **Windows CI `Check formatting` failure.** The `windows-2022` job had failed on every run since the Go port: the runner's `core.autocrlf=true` checked `.go` files out with CRLF, so `gofmt -l` flagged all 39. A new `.gitattributes` (`* text=auto eol=lf`) forces LF checkout; the index was already all LF, so no renormalization was needed. Verification: a local clone with `core.autocrlf=true` flagged 39 files before the change and 0 after; `task check` passed on macOS. The Windows runner was not re-run locally.
+
 ### Added
 
 - **Security review fixes:**

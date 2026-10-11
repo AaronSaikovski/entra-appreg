@@ -1,0 +1,2 @@
+# Check out LF everywhere so `gofmt -l` passes on Windows runners (core.autocrlf=true).
+* text=auto eol=lf
