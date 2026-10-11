@@ -25,6 +25,23 @@ const (
 	exitUsage   = 2 // invalid input, including no arguments and a non-TTY delete
 )
 
+// Build metadata injected at link time via:
+//
+//	-ldflags "-X main.version=... -X main.commit=... -X main.date=..."
+//
+// Release (Taskfile / GoReleaser) pipelines populate all three; version has
+// no leading "v". Source code never hard-codes a version.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// fullVersion returns the full version string shown by --version.
+func fullVersion() string {
+	return fmt.Sprintf("%s (commit %s, built %s)", version, commit, date)
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
@@ -39,14 +56,14 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 	}
 	switch inv.Kind {
 	case cli.KindHelp:
-		fmt.Fprintln(stdout, cli.HelpText(inv.Topic))
+		fmt.Fprintln(stdout, cli.HelpText(inv.Topic, version))
 		return exitOK
 	case cli.KindVersion:
-		fmt.Fprintln(stdout, "entra-appreg "+cli.Version())
+		fmt.Fprintln(stdout, "entra-appreg "+fullVersion())
 		return exitOK
 	case cli.KindNoArguments:
 		fmt.Fprint(stderr, "No arguments given. Here is how to use this program:\n\n")
-		fmt.Fprintln(stdout, cli.HelpText(cli.TopicGeneral))
+		fmt.Fprintln(stdout, cli.HelpText(cli.TopicGeneral, version))
 		return exitUsage
 	}
 	opts := inv.Options

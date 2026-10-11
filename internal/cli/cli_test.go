@@ -379,7 +379,7 @@ func TestValidationOrderAndMessages(t *testing.T) {
 
 func TestHelpTextUsesBinaryNameAndGoCredential(t *testing.T) {
 	for _, topic := range []HelpTopic{TopicGeneral, TopicCreate, TopicExposeAPI, TopicList, TopicDelete} {
-		text := HelpText(topic)
+		text := HelpText(topic, "1.2.3")
 		if strings.Contains(text, "cargo") || strings.Contains(text, "AzureCliCredential") || strings.Contains(text, "NOTE") {
 			t.Fatalf("topic %d still has Rust-specific text", topic)
 		}
@@ -390,8 +390,8 @@ func TestHelpTextUsesBinaryNameAndGoCredential(t *testing.T) {
 			t.Fatalf("topic %d lacks AzureCLICredential", topic)
 		}
 	}
-	general := HelpText(TopicGeneral)
-	if !strings.HasPrefix(general, "entra-appreg "+Version()+" - manage ") ||
+	general := HelpText(TopicGeneral, "1.2.3")
+	if !strings.HasPrefix(general, "entra-appreg 1.2.3 - manage ") ||
 		!strings.Contains(general, "Azure SDK for Go (azidentity) AzureCLICredential") {
 		t.Fatalf("general help heading/authentication text wrong")
 	}

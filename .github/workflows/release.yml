@@ -32,10 +32,13 @@ jobs:
 
       - name: Check the tag is injected as the version
         run: |
-          go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=$GITHUB_REF_NAME" -o "$RUNNER_TEMP/entra-appreg" ./cmd/entra-appreg
+          tag_version="${GITHUB_REF_NAME#v}"
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -ldflags "-X main.version=$tag_version -X main.commit=${GITHUB_SHA::7} -X main.date=$built" -o "$RUNNER_TEMP/entra-appreg" ./cmd/entra-appreg
           actual=$("$RUNNER_TEMP/entra-appreg" --version)
-          if [[ "$actual" != "entra-appreg ${GITHUB_REF_NAME#v}" ]]; then
-            echo "Expected 'entra-appreg ${GITHUB_REF_NAME#v}', got '$actual'" >&2
+          expected="entra-appreg $tag_version (commit ${GITHUB_SHA::7}, built $built)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Expected '$expected', got '$actual'" >&2
             exit 1
           fi
 

@@ -6,10 +6,34 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
-- **The version now comes from git tags.** `internal/cli/version.go` no longer hard-codes `0.0.1`.
-  - The unexported `version` is injected with `-ldflags -X …/internal/cli.version=<tag>`, by GoReleaser (`{{ .Version }}`) and by Taskfile `build`/`release`/`run`/`check` (`git describe --tags --always --dirty`). Without it, `cli.Version()` falls back to Go's build-info module version, then `dev`.
-  - `release.yml` no longer compares the tag with a source constant; it builds with the tag and checks that `--version` reports it. The CI smoke injects `v0.0.0-ci` and checks for it.
-  - New `TestResolveVersionPrefersLinkedTagThenBuildInfoThenDev`.
+- **`create` now sets up what a SPA needs to sign users in**, as the Entra admin center does:
+  - Creates the **service principal** (`POST /servicePrincipals {appId}`) right after the app and prints `AUTH_SP_ID`. Without it, admin consent was impossible, tenants that restrict user consent blocked sign-in, and tokens for the app's own `api://` scope failed (AADSTS500011). On failure, stderr prints `az ad sp create --id <client-id>` to finish by hand. There is no retry.
+  - Adds delegated **Microsoft Graph `User.Read`** to `requiredResourceAccess` on the POST. With `--scope-name`, the scope PATCH resends that list with the app's own new scope added, so **Grant admin consent** covers both.
+  - **Warns on stderr** when `--redirect-urls` is omitted, because such an app cannot sign anyone in.
+  - The report adds `Service principal ID:` and `API permissions:` lines. `TestCreateOutputAndReportAreExact` was updated on purpose.
+- **`--params-file <file.json>` on every command.** It reads options from one JSON object keyed by option name without `--`.
+  - Command-line options win; command-line redirects replace the file's list.
+  - Values go through the same validation and option-group rules. Unknown keys, wrong types, invalid JSON, trailing values and files over 1 MiB exit 2 before sign-in. `top`/`secret-expiry` also accept whole numbers, and `null` means absent.
+  - New sample `examples/spa.params.json`, parsed by a test.
+- **Verification on macOS:** `task check` (gofmt, vet, Windows vet, build, tests, binary smoke), `task staticcheck`, and `go test -race` for `cli`/`app`/`graph` all pass.
+  - New tests: service principal failure and recovery hint, the no-redirect warning, `requiredResourceAccess` on POST and PATCH, and five `--params-file` tests.
+  - Binary smoke with an empty `PATH`: the sample file parses and stops at the expected `Azure CLI was not found` (exit 1). An unknown key, a list-incompatible key, CLI `--top` with create, a wrong type and a missing file each exit 2 before sign-in.
+  - Real `az`, live Graph and an MSAL.js sign-in were not run. Graph accepting the self-referencing `requiredResourceAccess` in the same PATCH that defines the scope, and service-principal replication timing, are unverified.
+- **SPA readiness documented.** README has a new **SPA readiness and known gaps** table and AGENTS.md a **Known SPA Gaps** list. New `TestCreateServicePrincipalPostsAppIDAndRequiresID` covers the request body, a reply missing `id`, and a status error. Verification: `task check` and `go test -race ./...` pass (99 tests).
+- **Build metadata moved to `package main`.** `cmd/entra-appreg/main.go` now holds `version`, `commit` and `date` (defaults `dev`/`none`/`unknown`), set with `-ldflags "-X main.version=… -X main.commit=… -X main.date=…"`.
+  - `--version` prints `entra-appreg <version> (commit <commit>, built <date>)` via `fullVersion()`. The general help heading shows only the version; `cli.HelpText` now takes it as a parameter.
+  - `internal/cli/version.go` and its test are removed, along with the code that stripped a leading `v` and fell back to Go build info. Pipelines inject the version without the `v`.
+  - **Behavior change:** a binary built without `-ldflags`, including `go install …@v0.0.1`, now reports `dev (commit none, built unknown)` instead of the module version.
+  - Wiring:
+    - GoReleaser: `{{ .Version }}`, `{{ .ShortCommit }}`, `{{ .Date }}`.
+    - Taskfile: `git describe` minus the `v`, `git rev-parse --short HEAD`, and a UTC timestamp from the `now` template.
+    - `ci.yml` smoke: injects `0.0.0-ci`/`ci-commit`/`ci-date` and checks the exact line.
+    - `release.yml`: builds with the tag, the short SHA and the build time, and checks the exact line.
+  - `TestVersionOutputIsExact` sets all three variables and pins the `--version` line and the help heading.
+  - Verification on macOS:
+    - `task check` passes; its smoke compares the full stamped line: `entra-appreg 0.0.1-1-g7a03e39-dirty (commit 7a03e39, built 2026-10-11T21:47:18Z)`.
+    - `go run ./cmd/entra-appreg --version` prints `entra-appreg dev (commit none, built unknown)`.
+    - actionlint (all workflows) and `goreleaser check` pass. A single-target GoReleaser snapshot build prints `entra-appreg 0.0.1-SNAPSHOT-7a03e39 (commit 7a03e39, built 2026-10-11T21:50:46Z)`.
 - **Docs and help text synced.** The help AUTHENTICATION sections had still said `create` "discovers and pins" the tenant; they now describe one `az` call in the active context, with the tenant read from Graph. README and AGENTS.md were updated for the single `az` call, the error-body cap, the create step order, versioning, and the test count.
 - **Verification on macOS:**
   - `task check`, staticcheck and actionlint (all workflows) pass, and `goreleaser check` passes.

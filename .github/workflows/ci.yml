@@ -48,13 +48,13 @@ jobs:
         run: |
           suffix=''
           if [[ "$RUNNER_OS" == 'Windows' ]]; then suffix='.exe'; fi
-          go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=v0.0.0-ci" -o "$RUNNER_TEMP/entra-appreg$suffix" ./cmd/entra-appreg
+          go build -ldflags "-X main.version=0.0.0-ci -X main.commit=ci-commit -X main.date=ci-date" -o "$RUNNER_TEMP/entra-appreg$suffix" ./cmd/entra-appreg
           python - <<'PY'
           import os
           import re
           import subprocess
           from pathlib import Path
-          version = '0.0.0-ci'  # injected above via -ldflags -X ...cli.version
+          version = '0.0.0-ci (commit ci-commit, built ci-date)'  # injected above via -ldflags -X main.*
           suffix = '.exe' if os.name == 'nt' else ''
           binary = Path(os.environ['RUNNER_TEMP'], 'entra-appreg' + suffix).resolve()
           actual = subprocess.check_output([str(binary), '--version'], text=True).strip()

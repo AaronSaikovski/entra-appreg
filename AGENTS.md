@@ -23,10 +23,11 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 
 - **`internal/cli`: three-phase parse.** Cobra must never broaden syntax or print output.
   1. **Pre-parse.** The command word is lowercased. An unknown command fails first. `--version` beats `--help` anywhere, including in a value position. `--` and `--x=y` are rejected.
-  2. **Cobra** (`flags.go`). A fresh, silent tree with only the requested subcommand is built per call, and all 17 flags are `PersistentFlags`.
+  2. **Cobra** (`flags.go`). A fresh, silent tree with only the requested subcommand is built per call, and all 18 flags are `PersistentFlags`.
      - `optionalString` rejects values starting with `--`.
      - `redirectList` accumulates values; `--redirect-url` is normalized to `--redirect-urls`.
      - A hidden `--help` with no `-h` replaces Cobra's own. A `ran` guard catches cases where no subcommand ran.
+  2b. **`--params-file`** (`params.go`). `applyParamsFile` runs after Cobra and before `validate()`. It decodes one JSON object (cap 1 MiB) into `map[string]json.RawMessage` and fills only options still unset; command-line redirects replace the file list. Keys are option names without `--`, checked in sorted order; unknown keys, wrong types and trailing values are usage errors. `--params-file` has no option group, so every command accepts it, and file-supplied options hit the same group rules. Adding a text option means adding a `paramsTargets` row too. The sample `examples/spa.params.json` is parsed by `TestSampleParamsFileParses`.
   3. **`validate()`** is a switch on the command. Forbidden-option messages come from one ordered table of all options, each tagged with group bits; adding an option means adding one row there.
   - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
 - **`internal/auth`: one `az` process per command.**
@@ -52,8 +53,9 @@ Requests are sequential. The context is `context.Background()`; only auth has an
     2. Validate (`planCreate`): name → audience → redirects → exact-string dedup → scope → lifetime.
     3. Duplicate-name preflight (`checkNameAvailable`). A match is a usage error.
     4. Tenant lookup (`currentTenant`). A failure stops the command before anything is created.
-    5. POST (`postApplication`), then print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately.
-    6. Scope PATCH (`addScope`).
+    5. POST (`postApplication`) with `spa.redirectUris` and `requiredResourceAccess` = Graph `User.Read` (delegated), then print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately. With no redirects, `noRedirectNotice` goes to stderr first.
+    5b. Service principal (`addServicePrincipal` → `graph.CreateServicePrincipal`, `POST /servicePrincipals {appId}`), then print `AUTH_SP_ID`. On failure, stderr gets the `az ad sp create --id <client>` recovery hint; there is no retry.
+    6. Scope PATCH (`addScope`): identifier URI, scope, and `requiredResourceAccess` resent in full (`requiredAccess`: Graph `User.Read` plus the app's own new scope).
     7. `addPassword` (`addSecret`).
     8. Report (`reportContents` builds the text without side effects; `writeReport` writes it).
   - `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`; build usage errors with `cli.Usagef`.
@@ -66,19 +68,20 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 | Path | Purpose |
 |---|---|
 | `cmd/entra-appreg/` | `main` plus testable `run(args, stdin *os.File, stdout io.Writer, stderr *os.File) int`. Stdin and stderr are `*os.File` so `term.IsTerminal` works. |
-| `internal/cli/` | Parsing, validation, help text (`help.go`), build version (`version.go`). |
+| `internal/cli/` | Parsing, validation, help text (`help.go`; `HelpText(topic, version)` takes the short version from `main`). |
 | `internal/auth/` | `az` presence check and the single Azure CLI token request. |
 | `internal/graph/` | Graph client, `StatusError`, paging, next-link safety. |
 | `internal/graphtest/` | Loopback Graph fixture. Non-test file; import it only from tests. |
 | `internal/app/` | Workflows plus `scope.go`/`lifetime.go` rules. |
 | `internal/report/` | Report writer; platform files `report_windows.go`/`report_other.go`. |
+| `examples/` | `spa.params.json`, the sample `--params-file`; a cli test parses it. |
 
 ## Development Commands
 
 Run from the repo root. `task check` is the canonical gate; it must pass after every change:
 
 ```sh
-task check            # gofmt -l, go vet, GOOS=windows go vet, go build, go test, then a binary smoke (--version must equal git describe)
+task check            # gofmt -l, go vet, GOOS=windows go vet, go build, go test, then a binary smoke (--version must equal "<git describe without v> (commit <short sha>, built <UTC time>)")
 task test             # go test -v ./...
 task run -- list --help
 task build            # → bin/entra-appreg[.exe]
@@ -91,7 +94,7 @@ Without Task:
 
 ```sh
 test -z "$(gofmt -l .)" && go vet ./... && GOOS=windows go vet ./... && go build ./... && go test ./...
-go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=$(git describe --tags --always --dirty)" -o bin/entra-appreg ./cmd/entra-appreg && bin/entra-appreg --version
+go build -ldflags "-X main.version=$(git describe --tags --always --dirty | sed 's/^v//') -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/entra-appreg ./cmd/entra-appreg && bin/entra-appreg --version
 bin/entra-appreg list --top 0          # must exit 2 before auth
 bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 ```
@@ -119,13 +122,12 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
   - A missing `keyId` writes `(not returned by Graph)` and keeps the secret, then exits 1.
   - Never log tokens.
 - **Report contents.** Labels are padded to column 25. Line endings are CRLF on Windows. Dates use RFC3339Nano UTC, not Graph's original strings.
-- **New options.** Each needs a flag in `flags.go`, validation and option-group membership in `cli.go`, help text, README, and tests.
+- **New options.** Each needs a flag in `flags.go`, validation and option-group membership in `cli.go`, a `paramsTargets` row (or a case in `applyParamsFile`) in `params.go`, help text, README, and tests.
 - **After every change,** update README (behavior and limits) and CHANGELOG `## Unreleased`, recording the verification actually run.
 
 ## Important Files
 
-- `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate.
-- `internal/cli/version.go`: versions come only from git tags. The unexported `version` var is set at link time with `-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=<tag>` by GoReleaser (`{{ .Version }}`) and the Taskfile (`git describe --tags --always --dirty`). `cli.Version()` strips a leading `v` and falls back to the Go build-info module version, then `dev`. Never hard-code a version number. The help heading is built at call time in `HelpText`, and the CI smoke injects `v0.0.0-ci` and checks for it.
+- `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate, and build metadata. `version`/`commit`/`date` (defaults `dev`/`none`/`unknown`) are set at link time with `-X main.version=… -X main.commit=… -X main.date=…`. GoReleaser uses `{{ .Version }}`/`{{ .ShortCommit }}`/`{{ .Date }}`; the Taskfile uses `git describe` minus the `v`, `git rev-parse --short HEAD`, and a UTC timestamp. There is no `v` stripping or build-info fallback in code, so pipelines must inject `version` without a `v`. `--version` prints `entra-appreg ` + `fullVersion()`; the general help heading shows only `version`. Never hard-code a version number. The CI smoke injects `0.0.0-ci`/`ci-commit`/`ci-date` and checks the exact line; `release.yml` checks the tag build.
 - `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
 - `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
 - `Taskfile.yml`: dev tasks.
@@ -143,7 +145,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 ## Testing & QA
 
-- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 92 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 99 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
 - **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
   - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
   - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.
@@ -157,3 +159,14 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 - **Platform-specific tests.** `report_unix_test.go` (build tag `unix`) and `report_windows_test.go` (`windows`). The Windows test is compiled locally via `GOOS=windows go vet` but only runs on Windows CI. The report-failure case skips on Windows or when running as root.
 - **Hermeticity.** Keep tests offline. Use only `t.Setenv`/`t.TempDir`; never touch the real Azure session, global cwd or credentials.
 - **Live QA.** Use README's **Smoke test checklist** only in a deliberately chosen test tenant, starting with read-only `list --top 1 --json`. Create, expose and delete mutate the tenant. Keep reports and captured secret output out of git and logs.
+
+## Known SPA Gaps
+
+README **SPA readiness and known gaps** is the source of truth; keep it in sync when closing any of these. Open items, by impact:
+
+1. No live-tenant verification yet. Self-referencing `requiredResourceAccess` in the scope PATCH and SP creation right after the POST are unconfirmed.
+2. No command to add redirect URIs to an existing app. If added, rebuild the `spa` body from fresh models and keep existing URIs (backing-store rule).
+3. `requestedAccessTokenVersion` is only set for personal-account audiences, so own-API tokens are v1 otherwise. A likely fix is to set 2 whenever `create` exposes a scope; this changes the POST/PATCH bodies and the exact-output tests.
+4. `validRedirect` accepts `http` for any host; restricting it to `localhost`/`127.0.0.1` would change `TestValidationOrderAndMessages`-style expectations.
+5. `expose-api` leaves `requiredResourceAccess` untouched (unlike `create`).
+6. Admin consent (`oauth2PermissionGrants`) is deliberately out of scope: it needs privileged roles.

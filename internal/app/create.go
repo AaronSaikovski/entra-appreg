@@ -27,6 +27,17 @@ var audiences = []string{
 	"PersonalMicrosoftAccount",
 }
 
+// Microsoft Graph's well-known application ID and its delegated User.Read
+// permission ID. The Entra admin center adds this permission to every new
+// registration; listing it lets an admin grant consent ahead of sign-in.
+const (
+	msGraphAppID     = "00000003-0000-0000-c000-000000000000"
+	userReadScopeID  = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
+	userReadLabel    = "Microsoft Graph User.Read (delegated)"
+	reportIndent     = "\n                         "
+	noRedirectNotice = "Warning: no --redirect-urls given. The app cannot sign anyone in until a SPA redirect URI is added (Entra admin center > App registrations > Authentication)."
+)
+
 // createPlan is the validated input of a create run.
 type createPlan struct {
 	name      string
@@ -62,8 +73,8 @@ type createdSecret struct {
 
 // create registers a new application. Steps run in a fixed order: optional
 // --appid lookup, input validation, duplicate-name check, tenant lookup, POST,
-// scope PATCH, addPassword, report. IDs are printed as soon as the POST
-// succeeds so they survive any later failure.
+// service principal, scope PATCH, addPassword, report. IDs are printed as soon
+// as each object exists so they survive any later failure.
 func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	out := env.Stdout
 	if o.AppID != nil && *o.AppID != "no-id" {
@@ -85,7 +96,14 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 	if err != nil {
 		return err
 	}
+	if len(plan.redirects) == 0 {
+		fmt.Fprintln(env.Stderr, noRedirectNotice)
+	}
 	objectID, clientID, err := postApplication(ctx, g, out, plan)
+	if err != nil {
+		return err
+	}
+	spID, err := addServicePrincipal(ctx, g, env, clientID)
 	if err != nil {
 		return err
 	}
@@ -107,7 +125,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 		fmt.Fprintln(out, "Skipping client secret (pass --create-secret to create one)")
 	}
 
-	contents := reportContents(plan, tenantID, objectID, clientID, scope, secret)
+	contents := reportContents(plan, tenantID, objectID, clientID, spID, scope, secret)
 	if err := writeReport(env, plan.name, contents, secret != nil); err != nil {
 		return err
 	}
@@ -266,12 +284,14 @@ func postApplication(ctx context.Context, g *graph.Client, out io.Writer, plan c
 	for _, uri := range plan.redirects {
 		fmt.Fprintf(out, "  Redirect URI (SPA): %s\n", uri)
 	}
+	fmt.Fprintf(out, "  API permission: %s\n", userReadLabel)
 	body := models.NewApplication()
 	body.SetDisplayName(new(plan.name))
 	body.SetSignInAudience(new(plan.audience))
 	spa := models.NewSpaApplication()
 	spa.SetRedirectUris(plan.redirects)
 	body.SetSpa(spa)
+	body.SetRequiredResourceAccess(requiredAccess("", nil))
 	if plan.needsV2() {
 		api := models.NewApiApplication()
 		api.SetRequestedAccessTokenVersion(new(int32(2)))
@@ -287,8 +307,45 @@ func postApplication(ctx context.Context, g *graph.Client, out io.Writer, plan c
 	return objectID, clientID, nil
 }
 
+// addServicePrincipal creates the app's service principal (enterprise
+// application) in this tenant, as the Entra admin center does. Without it an
+// admin cannot grant consent, and tokens for the app's own api:// scope fail
+// with AADSTS500011.
+func addServicePrincipal(ctx context.Context, g *graph.Client, env Env, clientID string) (string, error) {
+	fmt.Fprintln(env.Stdout, "Creating service principal (enterprise application)")
+	id, err := g.CreateServicePrincipal(ctx, clientID)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "The app registration was created without a service principal. Once the cause is fixed, create it with: az ad sp create --id %s\n", clientID)
+		return "", err
+	}
+	fmt.Fprintf(env.Stdout, "AUTH_SP_ID=%s\n", id)
+	return id, nil
+}
+
+// requiredAccess lists the delegated permissions the SPA requests: Graph
+// User.Read and, when create exposes one, the app's own scope, so admin
+// consent in the Entra admin center covers both. A PATCH replaces the whole
+// list, so the scope PATCH resends the Graph entry.
+func requiredAccess(clientID string, scope *exposedScope) []models.RequiredResourceAccessable {
+	access := []models.RequiredResourceAccessable{delegatedAccess(msGraphAppID, uuid.MustParse(userReadScopeID))}
+	if scope != nil {
+		access = append(access, delegatedAccess(clientID, scope.id))
+	}
+	return access
+}
+
+func delegatedAccess(resourceAppID string, permissionID uuid.UUID) models.RequiredResourceAccessable {
+	permission := models.NewResourceAccess()
+	permission.SetId(&permissionID)
+	permission.SetTypeEscaped(new("Scope"))
+	resource := models.NewRequiredResourceAccess()
+	resource.SetResourceAppId(new(resourceAppID))
+	resource.SetResourceAccess([]models.ResourceAccessable{permission})
+	return resource
+}
+
 // addScope sets the api://{clientID} identifier URI and the requested scope
-// on the new registration.
+// on the new registration, and adds that scope to the app's own permissions.
 func addScope(ctx context.Context, g *graph.Client, out io.Writer, plan createPlan, objectID, clientID string) (*exposedScope, error) {
 	identifier := "api://" + clientID
 	scope := &exposedScope{
@@ -306,6 +363,7 @@ func addScope(ctx context.Context, g *graph.Client, out io.Writer, plan createPl
 	patch := models.NewApplication()
 	patch.SetIdentifierUris([]string{identifier})
 	patch.SetApi(api)
+	patch.SetRequiredResourceAccess(requiredAccess(clientID, scope))
 	if err := g.PatchApplication(ctx, objectID, patch); err != nil {
 		return nil, err
 	}
@@ -359,10 +417,10 @@ func formatTime(t time.Time) string {
 
 // reportContents renders the report with LF line endings. scope and secret
 // are nil when not requested.
-func reportContents(plan createPlan, tenantID, objectID, clientID string, scope *exposedScope, secret *createdSecret) string {
+func reportContents(plan createPlan, tenantID, objectID, clientID, spID string, scope *exposedScope, secret *createdSecret) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Application name:        %s\nApplication (client) ID: %s\nObject ID:               %s\nDirectory (tenant) ID:   %s\nSupported account types: %s\n",
-		plan.name, clientID, objectID, tenantID, plan.audience)
+	fmt.Fprintf(&b, "Application name:        %s\nApplication (client) ID: %s\nObject ID:               %s\nService principal ID:    %s\nDirectory (tenant) ID:   %s\nSupported account types: %s\n",
+		plan.name, clientID, objectID, spID, tenantID, plan.audience)
 	if scope != nil {
 		s := scope.spec
 		fmt.Fprintf(&b, "Application ID URI:      %s\nScope (full name):       %s\nScope ID:                %s\nScope display name:      %s\nScope description:       %s\nScope consent:           %s\nScope state:             %s\n",
@@ -375,7 +433,12 @@ func reportContents(plan createPlan, tenantID, objectID, clientID string, scope 
 		fmt.Fprintf(&b, "Secret description:      %s\nSecret ID:               %s\nSecret value:            %s\nSecret starts:           %s\nSecret expires:          %s\n",
 			secret.description, secret.keyID, secret.value, secret.starts, secret.expires)
 	}
-	fmt.Fprintf(&b, "Redirect URIs (SPA):     %s\n", strings.Join(plan.redirects, "\n                         "))
+	permissions := userReadLabel
+	if scope != nil {
+		permissions += reportIndent + scope.fullName + " (delegated)"
+	}
+	fmt.Fprintf(&b, "API permissions:         %s\n", permissions)
+	fmt.Fprintf(&b, "Redirect URIs (SPA):     %s\n", strings.Join(plan.redirects, reportIndent))
 	return b.String()
 }
 

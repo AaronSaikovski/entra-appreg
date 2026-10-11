@@ -1,0 +1,15 @@
+{
+  "name": "My SPA",
+  "audience": "AzureADMyOrg",
+  "redirect-urls": [
+    "http://localhost:5173/auth/callback",
+    "https://myapp.example.com/auth/callback"
+  ],
+  "scope-name": "access_as_user",
+  "scope-consent": "users",
+  "scope-display-name": "Access My SPA",
+  "scope-description": "Allow the application to access My SPA on behalf of the signed-in user.",
+  "scope-user-display-name": "Access My SPA",
+  "scope-user-description": "Allow the application to access My SPA on your behalf.",
+  "scope-state": "enabled"
+}

@@ -334,6 +334,23 @@ func (c *Client) CreateApplication(ctx context.Context, app models.Applicationab
 	return requireApplication(created)
 }
 
+// CreateServicePrincipal POSTs the service principal (enterprise application)
+// for appID in the signed-in tenant and returns its object ID. Graph creates
+// one implicitly only through the portal or first consent, so create adds it.
+func (c *Client) CreateServicePrincipal(ctx context.Context, appID string) (string, error) {
+	body := models.NewServicePrincipal()
+	body.SetAppId(new(appID))
+	builder := c.sdk.ServicePrincipals()
+	created, err := builder.Post(ctx, body, nil)
+	if err != nil {
+		return "", describe(http.MethodPost, pathOf(builder.ToPostRequestInformation(ctx, body, nil)), err)
+	}
+	if created == nil || created.GetId() == nil {
+		return "", MissingFieldError("id")
+	}
+	return *created.GetId(), nil
+}
+
 // PatchApplication PATCHes an application; an empty success reply is fine.
 //
 // Backing-store rule: msgraph-sdk-go enables a backing store, so a model fetched

@@ -48,7 +48,7 @@ func TestExitCodes(t *testing.T) {
 		stderr string // substring
 	}{
 		{args: []string{}, code: 2, stdout: "USAGE", stderr: "No arguments given."},
-		{args: []string{"--version"}, code: 0, stdout: "entra-appreg " + cli.Version() + "\n"},
+		{args: []string{"--version"}, code: 0, stdout: "entra-appreg " + fullVersion() + "\n"},
 		{args: []string{"list", "--top", "0"}, code: 2, stderr: "--top must be a positive whole number or 'all', got: 0"},
 		{args: []string{"--appid", " "}, code: 2, stderr: "--appid cannot be blank"},
 		{args: []string{"delete"}, code: 2},
@@ -71,13 +71,23 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
+// TestVersionOutputIsExact pins the --version line and the general help
+// heading for injected build metadata, as the release pipelines link it.
 func TestVersionOutputIsExact(t *testing.T) {
+	oldVersion, oldCommit, oldDate := version, commit, date
+	t.Cleanup(func() { version, commit, date = oldVersion, oldCommit, oldDate })
+	version, commit, date = "1.2.3", "abc1234", "2026-10-12T01:02:03Z"
+
 	code, stdout, stderr := runOffline(t, "--version")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if want := "entra-appreg " + cli.Version() + "\n"; stdout != want {
+	if want := "entra-appreg 1.2.3 (commit abc1234, built 2026-10-12T01:02:03Z)\n"; stdout != want {
 		t.Errorf("got %q, want %q", stdout, want)
+	}
+	// The help heading shows only the short version.
+	if _, stdout, _ := runOffline(t, "--help"); !strings.HasPrefix(stdout, "entra-appreg 1.2.3 - manage ") {
+		t.Errorf("help heading = %q", strings.SplitN(stdout, "\n", 2)[0])
 	}
 }
 
