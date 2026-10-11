@@ -55,7 +55,7 @@ type Options struct {
 
 	AppID, Name, Audience, ScopeName, ScopeDisplayName, ScopeDescription, ScopeConsent,
 	ScopeUserDisplayName, ScopeUserDescription, ScopeState, Top,
-	SecretExpiry, SecretStart, SecretEnd *string
+	SecretExpiry, SecretStart, SecretEnd, KeyVaultURI, KeyVaultSecretName *string
 
 	// ParamsFile is the --params-file path. Its values are already merged
 	// into the fields above, under any given on the command line.
@@ -326,6 +326,8 @@ func suppliedNames(o *Options, groups optionGroup) []string {
 		{"--secret-expiry", groupSecret, o.SecretExpiry != nil},
 		{"--secret-start", groupSecret, o.SecretStart != nil},
 		{"--secret-end", groupSecret, o.SecretEnd != nil},
+		{"--keyvault-uri", groupSecret, o.KeyVaultURI != nil},
+		{"--keyvault-secret-name", groupSecret, o.KeyVaultSecretName != nil},
 		{"--top", groupList, o.Top != nil},
 		{"--json", groupList, o.JSON},
 	}

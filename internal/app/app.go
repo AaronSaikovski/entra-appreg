@@ -10,7 +10,13 @@ import (
 
 	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+	"github.com/AaronSaikovski/entra-appreg/internal/keyvault"
 )
+
+// SecretStore saves one secret version and returns the ID the store assigns.
+type SecretStore interface {
+	SetSecret(ctx context.Context, s keyvault.Secret) (string, error)
+}
 
 // Env is the process environment a workflow runs in.
 type Env struct {
@@ -18,6 +24,11 @@ type Env struct {
 	Stdin          io.Reader
 	Now            func() time.Time
 	ReportDir      string
+
+	// KeyVault opens the secret store for a validated vault URI. create
+	// calls it once, before anything is created, so a missing Key Vault
+	// token fails before the tenant changes. nil when unavailable.
+	KeyVault func(ctx context.Context, vaultURI string) (SecretStore, error)
 }
 
 // Run executes the command selected in opts.

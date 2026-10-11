@@ -45,6 +45,7 @@ type createPlan struct {
 	redirects []string        // deduplicated in first-seen order; never nil, so POST sends []
 	scope     *scopeSpec      // nil = no scope requested
 	lifetime  *secretLifetime // nil = no secret requested
+	keyVault  *vaultTarget    // nil = secret not stored in Key Vault
 }
 
 // needsV2 reports whether the audience includes personal Microsoft accounts,
@@ -68,13 +69,16 @@ type createdSecret struct {
 	value       string
 	starts      string
 	expires     string
-	keyMissing  bool // Graph omitted keyId; reported after the secret is saved
+	endTime     time.Time // expiry sent to Key Vault
+	keyMissing  bool      // Graph omitted keyId; reported after the secret is saved
+	vaultID     string    // Key Vault secret version ID, or "(not stored)"
 }
 
 // create registers a new application. Steps run in a fixed order: optional
-// --appid lookup, input validation, duplicate-name check, tenant lookup, POST,
-// service principal, scope PATCH, addPassword, report. IDs are printed as soon
-// as each object exists so they survive any later failure.
+// --appid lookup, input validation, duplicate-name check, tenant lookup,
+// Key Vault token, POST, service principal, scope PATCH, addPassword, Key
+// Vault store, report. IDs are printed as soon as each object exists so they
+// survive any later failure.
 func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	out := env.Stdout
 	if o.AppID != nil && *o.AppID != "no-id" {
@@ -95,6 +99,12 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 	tenantID, _, err := currentTenant(ctx, g)
 	if err != nil {
 		return err
+	}
+	var store SecretStore
+	if plan.keyVault != nil {
+		if store, err = openVault(ctx, env, plan.keyVault); err != nil {
+			return err
+		}
 	}
 	if len(plan.redirects) == 0 {
 		fmt.Fprintln(env.Stderr, noRedirectNotice)
@@ -124,15 +134,20 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 	} else {
 		fmt.Fprintln(out, "Skipping client secret (pass --create-secret to create one)")
 	}
+	var vaultErr error
+	if store != nil {
+		vaultErr = storeSecret(ctx, env, store, plan, clientID, secret)
+	}
 
 	contents := reportContents(plan, tenantID, objectID, clientID, spID, scope, secret)
 	if err := writeReport(env, plan.name, contents, secret != nil); err != nil {
 		return err
 	}
+	var keyErr error
 	if secret != nil && secret.keyMissing {
-		return errors.New("Graph's addPassword response had a missing or invalid keyId; the secret value was preserved in the report.")
+		keyErr = errors.New("Graph's addPassword response had a missing or invalid keyId; the secret value was preserved in the report.")
 	}
-	return nil
+	return errors.Join(keyErr, vaultErr)
 }
 
 // applicationExists looks up --appid. An existing application makes create a
@@ -169,6 +184,9 @@ func planCreate(o *cli.Options, now time.Time) (createPlan, error) {
 		return createPlan{}, err
 	}
 	if plan.lifetime, err = resolveLifetime(o, now); err != nil {
+		return createPlan{}, err
+	}
+	if plan.keyVault, err = resolveVault(o); err != nil {
 		return createPlan{}, err
 	}
 	return plan, nil
@@ -396,6 +414,7 @@ func addSecret(ctx context.Context, g *graph.Client, out io.Writer, plan createP
 		value:       *value,
 		starts:      "now",
 		expires:     formatTime(plan.lifetime.end),
+		endTime:     plan.lifetime.end,
 	}
 	if id := reply.GetKeyId(); id != nil {
 		secret.keyID = id.String()
@@ -407,6 +426,7 @@ func addSecret(ctx context.Context, g *graph.Client, out io.Writer, plan createP
 	}
 	if end := reply.GetEndDateTime(); end != nil {
 		secret.expires = formatTime(*end)
+		secret.endTime = *end
 	}
 	return secret, nil
 }
@@ -432,6 +452,9 @@ func reportContents(plan createPlan, tenantID, objectID, clientID, spID string, 
 	if secret != nil {
 		fmt.Fprintf(&b, "Secret description:      %s\nSecret ID:               %s\nSecret value:            %s\nSecret starts:           %s\nSecret expires:          %s\n",
 			secret.description, secret.keyID, secret.value, secret.starts, secret.expires)
+		if plan.keyVault != nil {
+			fmt.Fprintf(&b, "Key Vault secret:        %s in %s\nKey Vault secret ID:     %s\n", plan.keyVault.name, plan.keyVault.uri, secret.vaultID)
+		}
 	}
 	permissions := userReadLabel
 	if scope != nil {

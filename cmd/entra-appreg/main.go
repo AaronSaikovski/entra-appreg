@@ -16,6 +16,7 @@ import (
 	"github.com/AaronSaikovski/entra-appreg/internal/auth"
 	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+	"github.com/AaronSaikovski/entra-appreg/internal/keyvault"
 )
 
 // Exit codes.
@@ -96,11 +97,21 @@ func execute(opts *cli.Options, stdin *os.File, stdout io.Writer, stderr *os.Fil
 	if err != nil {
 		return fail(stderr, err)
 	}
-	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir}
+	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir, KeyVault: openKeyVault}
 	if err := app.Run(ctx, opts, client, env); err != nil {
 		return fail(stderr, err)
 	}
 	return exitOK
+}
+
+// openKeyVault acquires an Azure Key Vault token (a second az process, only
+// when create stores its secret in a vault) and returns the vault client.
+func openKeyVault(ctx context.Context, vaultURI string) (app.SecretStore, error) {
+	cred, err := auth.KeyVault(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Key Vault authentication failed: %w", err)
+	}
+	return keyvault.New(vaultURI, cred)
 }
 
 // fail prints err to w and returns its exit code: a usage error prints its

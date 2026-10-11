@@ -32,7 +32,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
   - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
 - **`internal/auth`: one `az` process per command.**
   - `exec.LookPath("az")` checks the install without starting a process (on Windows, PATHEXT finds `az.cmd`). If `az` is missing, the error is the "not found" message.
-  - `AzureCLICredential` with empty options requests the token for the active az context, under a 10 s deadline. There is no `az account show` pre-check and no tenant pinning. Each Python `az` start costs about a second, so don't add a second `az` call.
+  - `AzureCLICredential` with empty options requests the token for the active az context, under a 10 s deadline. There is no `az account show` pre-check and no tenant pinning. Each Python `az` start costs about a second, so don't add another `az` call. The one exception is `auth.KeyVault`: a second token (scope `keyvault.Scope`, own message `msgNoKeyVaultToken`) requested only when `create` gets `--keyvault-uri`. Both go through `tokenWith`.
   - Returns a `staticCredential` whose `String`/`GoString` are redacted, so Graph calls never start `az` again.
   - Error messages are fixed constants. Any `GetToken` failure maps to the one `msgNoToken` message: azidentity reports signed-out and expired sessions the same way, and its text carries `az` stderr, so never wrap it.
 - **Tenant ID** comes from Graph `/organization` through the same token (`currentTenant` in `list.go`, which requires exactly one org). `create` calls it after validation and the name check, before the POST, so the reported tenant is exactly the token's tenant.
@@ -56,7 +56,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
     5. POST (`postApplication`) with `spa.redirectUris` and `requiredResourceAccess` = Graph `User.Read` (delegated), then print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately. With no redirects, `noRedirectNotice` goes to stderr first.
     5b. Service principal (`addServicePrincipal` → `graph.CreateServicePrincipal`, `POST /servicePrincipals {appId}`), then print `AUTH_SP_ID`. On failure, stderr gets the `az ad sp create --id <client>` recovery hint; there is no retry.
     6. Scope PATCH (`addScope`): identifier URI, scope, and `requiredResourceAccess` resent in full (`requiredAccess`: Graph `User.Read` plus the app's own new scope).
-    7. `addPassword` (`addSecret`).
+    7. `addPassword` (`addSecret`), then, with `--keyvault-uri`, `storeSecret` (`vault.go`). `openVault` → `Env.KeyVault` runs earlier, after step 4 and before the POST, so a missing Key Vault token mutates nothing. A store failure records `(not stored)`, still writes the report, and is returned (exit 1) via `errors.Join` with any missing-`keyId` error.
     8. Report (`reportContents` builds the text without side effects; `writeReport` writes it).
   - `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`; build usage errors with `cli.Usagef`.
   - `list`: `/organization` must return exactly one org. In `--json` mode stdout is only the JSON array; tenant lines and notices go to stderr. Text output quotes names with `strconv.Quote`.
@@ -74,6 +74,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 | `internal/graphtest/` | Loopback Graph fixture. Non-test file; import it only from tests. |
 | `internal/app/` | Workflows plus `scope.go`/`lifetime.go` rules. |
 | `internal/report/` | Report writer; platform files `report_windows.go`/`report_other.go`. |
+| `internal/keyvault/` | `azsecrets` (Azure SDK for Go) wrapper: `ParseVaultURI` (public `*.vault.azure.net` only), `ValidSecretName`, `Client.SetSecret`. The SDK pipeline runs with `MaxRetries: -1` on a 10 s, no-redirect `http.Client`; the challenge-resource check stays on. Tests use `newClient` with a TLS loopback server that sends Key Vault's 401 challenge, with verification disabled. Errors add 401/403/409 guidance and never include the secret. |
 | `examples/` | `spa.params.json`, the sample `--params-file`; a cli test parses it. |
 
 ## Development Commands
@@ -129,7 +130,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 - `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate, and build metadata. `version`/`commit`/`date` (defaults `dev`/`none`/`unknown`) are set at link time with `-X main.version=… -X main.commit=… -X main.date=…`. GoReleaser uses `{{ .Version }}`/`{{ .ShortCommit }}`/`{{ .Date }}`; the Taskfile uses `git describe` minus the `v`, `git rev-parse --short HEAD`, and a UTC timestamp. There is no `v` stripping or build-info fallback in code, so pipelines must inject `version` without a `v`. `--version` prints `entra-appreg ` + `fullVersion()`; the general help heading shows only `version`. Never hard-code a version number. The CI smoke injects `0.0.0-ci`/`ci-commit`/`ci-date` and checks the exact line; `release.yml` checks the tag build.
 - `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
-- `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
+- `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, security/keyvault/azsecrets, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
 - `Taskfile.yml`: dev tasks.
 - `.goreleaser.yaml`: release builds and archives. Validate it with `goreleaser check`. `staticcheck.conf` disables only the error-string style checks.
 - `.github/workflows/`: all workflows use `go-version-file: go.mod`.
@@ -145,7 +146,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 ## Testing & QA
 
-- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 99 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 111 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph`, `keyvault` and `report`. No coverage threshold.
 - **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
   - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
   - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.

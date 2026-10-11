@@ -36,6 +36,7 @@ OPTIONS BY COMMAND
                --scope-consent  --scope-user-display-name  --scope-user-description
                --scope-state
                --create-secret  --secret-expiry  --secret-start  --secret-end
+               --keyvault-uri  --keyvault-secret-name
   expose-api   --appid  --scope-name  --scope-display-name  --scope-description
                --scope-consent  --scope-user-display-name  --scope-user-description
                --scope-state
@@ -144,6 +145,15 @@ CLIENT SECRET (optional)
   --secret-end <DD/MM/YYYY>
       Custom lifetime only. Last day the secret is valid (until 23:59:59 UTC).
       Required for a custom lifetime. Must be after the start.
+  --keyvault-uri <https://<vault-name>.vault.azure.net>
+  --keyvault-secret-name <name>
+      Also store the new secret value in this Azure Key Vault under this
+      name (1-127 letters, digits or hyphens), with the secret's expiry and
+      the client ID as a tag. Both are required together, with
+      --create-secret. Needs 'Key Vault Secrets Officer' (or a 'Set' secret
+      access policy) on the vault. An existing secret gets a new version.
+      A Key Vault token is requested before anything is created. If storing
+      fails, the secret is still in the report and the exit code is 1.
 
 HELP
   -h, --help
@@ -222,7 +232,8 @@ BEHAVIOUR
   - The scope is admins-only and enabled unless you say otherwise.
   - Nothing is created and no file is written; the result is printed.
   - Options that only apply to create or list (--name, --redirect-urls,
-    --audience, --create-secret, the --secret-* options, --top and --json)
+    --audience, --create-secret, the --secret-* and --keyvault-* options,
+    --top and --json)
     are rejected.
   Exit codes: 0 success, 1 failure (including app not found or scope already
   exists), 2 bad arguments.

@@ -55,7 +55,7 @@ entra-appreg create --params-file examples/spa.params.json
 
 ## Authentication
 
-- Each Graph command starts Azure CLI **once**: the SDK runs `az account get-access-token` for the active `az login` context. First the CLI checks that `az` is on `PATH`, without starting it. Sign-in must finish within 10 seconds.
+- Each Graph command starts Azure CLI **once**: the SDK runs `az account get-access-token` for the active `az login` context. First the CLI checks that `az` is on `PATH`, without starting it. Sign-in must finish within 10 seconds. `create --keyvault-uri` starts it a second time, for a Key Vault token, before anything is created.
 - The tenant ID shown by `list` and written to `create` reports comes from Microsoft Graph (`/organization`) using the same token, so it always matches the tenant the token was issued for. To work in a different tenant, switch with `az login --tenant <tenant-id>` first.
 - The CLI never signs in for you or reads Azure CLI's token cache. It does not fall back to `AZURE_CLIENT_SECRET` or any other environment credential.
 - Auth error messages are fixed text and never include Azure CLI output or tokens. They go to stderr and the command exits 1, so stdout stays empty for `--json`.
@@ -106,6 +106,7 @@ Every command accepts `--params-file <file.json>`. The file holds one JSON objec
 | `--secret-expiry <value>` | `90`, `180`, `365`, `545` or `730` days, or `custom`. Default 180. Requires `--create-secret`. |
 | `--secret-start <DD/MM/YYYY>` | Custom start date in UTC. Defaults to today and cannot be in the past. |
 | `--secret-end <DD/MM/YYYY>` | Required for a custom lifetime. Must be after the start; valid until 23:59:59 UTC. |
+| `--keyvault-uri <uri>` / `--keyvault-secret-name <name>` | Also store the new secret in Azure Key Vault. See [Store the secret in Key Vault](#store-the-secret-in-key-vault). |
 | `--params-file <file.json>` | Reads any of the options above from JSON. See [Parameters file](#parameters-file). |
 
 | Audience | Who can sign in |
@@ -154,12 +155,47 @@ Examples:
 # Scope with user consent, no secret
 entra-appreg create --name "My SPA" --redirect-urls "http://localhost:5173/auth/callback,https://example.com/auth/callback" --scope-name access_as_user --scope-consent users
 
+# Client secret, also stored in Key Vault (the report still contains it)
+entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --keyvault-uri https://my-vault.vault.azure.net --keyvault-secret-name backend-client-secret
+
 # Client secret (the report contains it in plaintext)
 entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --secret-expiry 90
 
 # Existing registration: look it up only; nothing is changed
 entra-appreg create --appid "YOUR_CLIENT_OR_OBJECT_ID"
 ```
+
+#### Store the secret in Key Vault
+
+With `--create-secret`, add both `--keyvault-uri https://<vault-name>.vault.azure.net` and `--keyvault-secret-name <name>` to also write the new secret value to Azure Key Vault. This uses the [Azure SDK for Go `azsecrets`](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-go) client.
+
+- **Validation.** Both options are required together and only with `--create-secret`. The URI must be `https://<vault-name>.vault.azure.net` (public cloud; no path, port or query), and the name must be 1–127 letters, digits or hyphens. Like the other `create` options, they are checked after sign-in and any `--appid` lookup. Bad values exit 2 before anything is created and before the Key Vault token is requested.
+- **Sign-in.** A Key Vault token comes from a second `az` call, made after the read-only checks and before the app is created, so a missing token changes nothing. The vault must be in the tenant of your active `az login`. The SDK handles Key Vault's challenge and checks that the challenge comes from a `vault.azure.net` resource.
+- **Permission.** Your `az login` identity needs the **Key Vault Secrets Officer** role on the vault. See [Key Vault permissions](#key-vault-permissions).
+- **What is stored.** The secret value, with `exp` set to the secret's expiry, `nbf` set to a future custom start date, and tags `entra-client-id` and `entra-key-id`. If the name already exists, Key Vault adds a new version. A soft-deleted secret with the same name fails with HTTP 409.
+- **Output.** stdout prints `Key Vault secret ID: <version id>`, and the report adds `Key Vault secret:` and `Key Vault secret ID:` lines. The report **still contains the plaintext secret**.
+- **Failure.** If storing fails after the secret is created, the report records `Key Vault secret ID: (not stored)` and keeps the secret, stderr says so, and the command exits 1. There are no retries; each request has a 10-second timeout and redirects aren't followed.
+
+##### Key Vault permissions
+
+The secret is written as the signed-in `az login` identity. **Assign that identity the built-in Azure role `Key Vault Secrets Officer` on the vault.** It is the least-privileged built-in role that can create secrets (data action `Microsoft.KeyVault/vaults/secrets/setSecret/action`).
+
+```sh
+az role assignment create \
+  --role "Key Vault Secrets Officer" \
+  --assignee "<your-upn-or-object-id>" \
+  --scope "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.KeyVault/vaults/<vault-name>"
+```
+
+- **Who can assign it.** Assigning the role needs **Owner**, **User Access Administrator** or **Role Based Access Control Administrator** at the vault's scope. New assignments can take a few minutes to apply.
+- **The vault must use Azure RBAC** (**Settings → Access configuration → Azure role-based access control**, the default for new vaults). If it still uses the legacy **Vault access policy** model, role assignments are ignored; instead add an access policy for your user with the **Secret permission: Set**.
+- **Roles that are not enough** (HTTP 403):
+  - subscription or resource-group **Owner** / **Contributor**, and **Key Vault Contributor** (management-plane only);
+  - **Key Vault Secrets User** and **Key Vault Reader** (read-only).
+  - **Key Vault Administrator** works but grants far more than needed.
+- **Same tenant.** The vault must be in the tenant of your active `az login`; otherwise HTTP 401.
+- **Network.** If the vault's firewall restricts access, allow your client IP or run from a network that reaches its private endpoint; otherwise HTTP 403 (`ForbiddenByFirewall`).
+- **Graph is separate.** Creating the app, service principal and client secret still needs the Graph permissions in [Permissions and 403 errors](#permissions-and-403-errors). The Key Vault role is needed only with `--keyvault-uri`.
 
 ### Scope options
 
@@ -232,7 +268,7 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
   - A successful run never prints the secret to the terminal.
   - If writing the report fails, the whole report, including the secret, is printed to stdout so it isn't lost, and the command exits 1.
   - If Graph doesn't return the secret's `keyId`, the report records `(not returned by Graph)` and keeps the secret, and the command exits 1.
-  - Move secrets to a secure store such as Key Vault. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
+  - Move secrets to a secure store such as Key Vault (`--keyvault-uri`), then delete the report. `.gitignore` excludes `*.txt`, but that can't protect files already committed.
 
 | Exit | Meaning |
 |---|---|
@@ -266,6 +302,7 @@ Reading applications needs the delegated Graph permission `Application.Read.All`
 |---|---|
 | Sign-in failure | Azure CLI 2.54.0+ is on `PATH`; run `az account show`, then `az login` to the intended tenant. |
 | Graph 403 | Confirm identity and tenant with `az account show`. If they're right, ask your Entra admin to review Azure CLI's Graph consent and your roles or app ownership. |
+| Key Vault 401 / 403 / 409 | 401: the vault is in another tenant. 403: grant **Key Vault Secrets Officer** or check the firewall. 409: recover or purge the soft-deleted secret, or pick another name. |
 | App not found / wrong tenant | Check the active CLI account. Both object ID and client ID work with `--appid`. |
 | `--name=value` rejected | Use a space: `--name value`. |
 | Exit 2 | A required option is missing or an option doesn't belong to that command; run the command's `--help`. |
@@ -284,6 +321,7 @@ The Go module `github.com/AaronSaikovski/entra-appreg` is at the repository root
 | `internal/graphtest` | Local fake Graph server for tests. |
 | `internal/app` | The four commands, plus scope and secret-lifetime rules. |
 | `internal/report` | Safe, collision-free report files. |
+| `internal/keyvault` | Stores the client secret with the Azure SDK `azsecrets` client: vault URI/name validation, no retries or redirects, permission guidance. |
 
 Common tasks ([Task](https://taskfile.dev) is optional):
 
@@ -354,7 +392,7 @@ After every change, update this README for behavior or limit changes, and add a 
 2. Create a test SPA (try `--params-file` with a copy of `examples/spa.params.json` and a unique `name`). In the portal check the audience and redirects, that **Enterprise applications** lists it under the printed `AUTH_SP_ID`, and that **API permissions** shows Graph `User.Read` (plus the app's own scope if exposed). Check the three IDs and the report. Sign in once with an MSAL.js sample using the client ID, tenant ID and a listed redirect URI.
 3. Run create again with the existing `--appid`: nothing is created or changed, and no report is written.
 4. Expose a scope. Existing settings are kept, and a duplicate name that differs only in case fails without an update.
-5. Create a test secret. Check the expiry, the report contents, and the file permissions.
+5. Create a test secret. Check the expiry, the report contents, and the file permissions. Repeat with `--keyvault-uri`/`--keyvault-secret-name` against a test vault: the secret version, expiry and tags appear in the vault, and the report lists its ID.
 6. Remove disposable registrations with `delete`: cancel once, check the app still exists, then confirm with `yes`.
 
 ## License

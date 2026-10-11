@@ -123,6 +123,8 @@ func parseFlags(commandName string, args []string) (*Options, error) {
 		{"secret-expiry", &opts.SecretExpiry},
 		{"secret-start", &opts.SecretStart},
 		{"secret-end", &opts.SecretEnd},
+		{"keyvault-uri", &opts.KeyVaultURI},
+		{"keyvault-secret-name", &opts.KeyVaultSecretName},
 		{"params-file", &opts.ParamsFile},
 	} {
 		flags.Var(optionalString{f.target}, f.name, "")

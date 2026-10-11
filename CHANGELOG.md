@@ -6,6 +6,18 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- **Store the new client secret in Azure Key Vault**: `create --create-secret --keyvault-uri https://<vault>.vault.azure.net --keyvault-secret-name <name>`.
+  - Uses the Azure SDK for Go `azsecrets` client (new direct dependency `sdk/security/keyvault/azsecrets` v1.5.0), following Microsoft's Key Vault Go quickstart. The quickstart's `DefaultAzureCredential` is replaced by `AzureCLICredential`, and its deprecated `sdk/keyvault` import path by the current one.
+  - The SDK pipeline has retries disabled and runs on a 10 s, no-redirect `http.Client`. Challenge authentication and the challenge-resource check stay on.
+  - Stores the value with `exp`/`nbf` attributes and `entra-client-id`/`entra-key-id` tags. The version ID is printed and added to the report; the report still holds the plaintext secret.
+  - The Key Vault token is a second `az` request (`auth.KeyVault`, via the shared `tokenWith`). It is requested only when the option is given, after the read-only checks and before the app POST, so a token failure changes nothing.
+  - If storing fails, the report records `(not stored)` and keeps the secret, and the command exits 1. Errors add guidance for 401 (wrong tenant), 403 (**Key Vault Secrets Officer** / firewall) and 409 (soft-deleted name), and never contain the secret.
+  - New `internal/keyvault` package. The options are `create`-only, accepted in `--params-file`, and described in help and in the README, including a **Key Vault permissions** section built around the Key Vault Secrets Officer role.
+  - Tests:
+    - The client runs against a TLS loopback vault that sends Key Vault's 401 challenge. Covered: body, attributes and tags, token scope and challenge tenant, no retries, no redirects, guidance, no secret in errors, and URI/name validation.
+    - Workflow tests: success, store failure, token failure before the POST, and validation order.
+    - Also: auth scope and message, and CLI option groups.
+  - Verification on macOS: `task check`, staticcheck, `go test -race ./...` and govulncheck pass (111 tests). An offline binary smoke (empty `PATH`) shows `list --keyvault-uri` exits 2 and `create` with the options reaches sign-in. No live vault was used.
 - **`create` now sets up what a SPA needs to sign users in**, as the Entra admin center does:
   - Creates the **service principal** (`POST /servicePrincipals {appId}`) right after the app and prints `AUTH_SP_ID`. Without it, admin consent was impossible, tenants that restrict user consent blocked sign-in, and tokens for the app's own `api://` scope failed (AADSTS500011). On failure, stderr prints `az ad sp create --id <client-id>` to finish by hand. There is no retry.
   - Adds delegated **Microsoft Graph `User.Read`** to `requiredResourceAccess` on the POST. With `--scope-name`, the scope PATCH resends that list with the app's own new scope added, so **Grant admin consent** covers both.

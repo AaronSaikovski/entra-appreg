@@ -72,6 +72,14 @@ func TestParamsFileOptionsObeyCommandRules(t *testing.T) {
 	if got := deref(mustRun(t, "delete", "--params-file", writeParams(t, `{"appid": "id"}`)).AppID); got != "id" {
 		t.Errorf("delete appid = %v", got)
 	}
+	expectErrMessage(t, "--keyvault-uri, --keyvault-secret-name can't be used with the expose-api command.",
+		"expose-api", "--appid", "id", "--scope-name", "s", "--params-file",
+		writeParams(t, `{"keyvault-uri": "https://vault1.vault.azure.net", "keyvault-secret-name": "s"}`))
+	expectErrMessage(t, "--keyvault-uri can't be used with the list command.", "list", "--keyvault-uri", "x")
+	o := mustRun(t, "--params-file", writeParams(t, `{"keyvault-uri": "https://vault1.vault.azure.net", "keyvault-secret-name": "s"}`))
+	if deref(o.KeyVaultURI) != "https://vault1.vault.azure.net" || deref(o.KeyVaultSecretName) != "s" {
+		t.Errorf("keyvault options = %v, %v", deref(o.KeyVaultURI), deref(o.KeyVaultSecretName))
+	}
 }
 
 func TestParamsFileRejectsBadFiles(t *testing.T) {

@@ -32,6 +32,8 @@ func paramsTargets(o *Options) map[string]**string {
 		"secret-expiry":           &o.SecretExpiry,
 		"secret-start":            &o.SecretStart,
 		"secret-end":              &o.SecretEnd,
+		"keyvault-uri":            &o.KeyVaultURI,
+		"keyvault-secret-name":    &o.KeyVaultSecretName,
 		"top":                     &o.Top,
 	}
 }

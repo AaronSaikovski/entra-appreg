@@ -1,7 +1,8 @@
-// Package auth acquires a Microsoft Graph token through the Azure CLI. Each
-// command starts exactly one az process: the azidentity AzureCLICredential's
-// token request. The tenant is the active az context's tenant; callers that
-// need its ID read it from Graph with the same token.
+// Package auth acquires access tokens through the Azure CLI. Each command
+// starts one az process for its Microsoft Graph token; create starts a second
+// one, for an Azure Key Vault token, only when --keyvault-uri is given. The
+// tenant is the active az context's tenant; callers that need its ID read it
+// from Graph with the same token.
 package auth
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+	"github.com/AaronSaikovski/entra-appreg/internal/keyvault"
 )
 
 // User-facing failure messages. They are fixed text by design: SDK and
@@ -27,9 +29,10 @@ const (
 	// azidentity reports signed-out and expired sessions with the same
 	// AuthenticationFailedError; telling them apart would mean parsing az
 	// stderr, which must never be surfaced.
-	msgNoToken    = "No usable Azure CLI login could provide a Microsoft Graph token. Run 'az login' (or 'az login --tenant <tenant-id>') for the intended tenant, then retry. If already signed in, check 'az account show'; Azure CLI 2.54.0 or newer is required."
-	msgEmptyToken = "Azure CLI did not return a nonempty access token."
-	msgTimeout    = "Azure CLI authentication timed out."
+	msgNoToken         = "No usable Azure CLI login could provide a Microsoft Graph token. Run 'az login' (or 'az login --tenant <tenant-id>') for the intended tenant, then retry. If already signed in, check 'az account show'; Azure CLI 2.54.0 or newer is required."
+	msgNoKeyVaultToken = "No usable Azure CLI login could provide an Azure Key Vault token. Check 'az account show' and that the account can sign in to Key Vault, then retry."
+	msgEmptyToken      = "Azure CLI did not return a nonempty access token."
+	msgTimeout         = "Azure CLI authentication timed out."
 )
 
 // authDeadline bounds the whole authentication, including the az process.
@@ -55,38 +58,54 @@ func newCLICredential(o *azidentity.AzureCLICredentialOptions) (azcore.TokenCred
 	return azidentity.NewAzureCLICredential(o)
 }
 
-// authenticateWith runs the lookup and token request under one deadline.
-// Once the deadline has passed, the result is a timeout whatever the steps
-// returned: a cancelled step fails with its own message, and a token that
-// arrives late is discarded.
+// KeyVault checks that az is installed and acquires one Azure Key Vault token
+// for the active az context, within authDeadline. It starts a second az
+// process, so callers request it only when a vault is used.
+func KeyVault(ctx context.Context) (azcore.TokenCredential, error) {
+	return tokenWith(ctx, exec.LookPath, newCLICredential, authDeadline, keyvault.Scope, msgNoKeyVaultToken)
+}
+
+// authenticateWith acquires the Graph token under deadline.
 func authenticateWith(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc, deadline time.Duration) (Session, error) {
+	cred, err := tokenWith(ctx, lookPath, newCred, deadline, graph.Scope, msgNoToken)
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{Credential: cred}, nil
+}
+
+// tokenWith runs the lookup and token request under one deadline. Once the
+// deadline has passed, the result is a timeout whatever the steps returned:
+// a cancelled step fails with its own message, and a token that arrives late
+// is discarded.
+func tokenWith(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc, deadline time.Duration, scope, noToken string) (azcore.TokenCredential, error) {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	session, err := acquire(ctx, lookPath, newCred)
+	cred, err := acquire(ctx, lookPath, newCred, scope, noToken)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return Session{}, errors.New(msgTimeout)
+		return nil, errors.New(msgTimeout)
 	}
-	return session, err
+	return cred, err
 }
 
 // acquire checks for az on PATH (LookPath honors PATHEXT on Windows, so
-// az.cmd is found), then requests a Graph token from az.
-func acquire(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc) (Session, error) {
+// az.cmd is found), then requests a token for scope from az.
+func acquire(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc, scope, noToken string) (azcore.TokenCredential, error) {
 	if _, err := lookPath("az"); err != nil {
-		return Session{}, errors.New(msgNotFound)
+		return nil, errors.New(msgNotFound)
 	}
 	cred, err := newCred(&azidentity.AzureCLICredentialOptions{})
 	if err != nil {
-		return Session{}, errors.New(msgInit)
+		return nil, errors.New(msgInit)
 	}
-	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{graph.Scope}})
+	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{scope}})
 	if err != nil {
-		return Session{}, errors.New(msgNoToken)
+		return nil, errors.New(noToken)
 	}
 	if strings.TrimSpace(token.Token) == "" {
-		return Session{}, errors.New(msgEmptyToken)
+		return nil, errors.New(msgEmptyToken)
 	}
-	return Session{Credential: staticCredential{token: token}}, nil
+	return staticCredential{token: token}, nil
 }
 
 // staticCredential returns the token acquired under the auth deadline.
