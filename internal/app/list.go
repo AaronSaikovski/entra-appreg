@@ -48,10 +48,10 @@ func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) (
 			}
 			clientID, id := item.GetAppId(), item.GetId()
 			if clientID == nil {
-				return false, requireError("appId")
+				return false, graph.MissingFieldError("appId")
 			}
 			if id == nil {
-				return false, requireError("id")
+				return false, graph.MissingFieldError("id")
 			}
 			name := deref(item.GetDisplayName(), "")
 			apps = append(apps, listedApp{Name: name, ClientID: *clientID, ID: *id, sortKey: strings.ToUpper(name)})
@@ -74,15 +74,15 @@ func list(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	if err != nil {
 		return err
 	}
-	tenants := orgs.GetValue()
-	if len(tenants) != 1 {
+	if orgs == nil || len(orgs.GetValue()) != 1 {
 		return errors.New("Graph must return exactly one tenant organization.")
 	}
+	tenants := orgs.GetValue()
 	if tenants[0] == nil || tenants[0].GetId() == nil {
-		return requireError("id")
+		return graph.MissingFieldError("id")
 	}
 	if tenants[0].GetDisplayName() == nil {
-		return requireError("displayName")
+		return graph.MissingFieldError("displayName")
 	}
 	tenantID, tenantName := *tenants[0].GetId(), *tenants[0].GetDisplayName()
 	apps, more, err := collectApplications(ctx, o, g)

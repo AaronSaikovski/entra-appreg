@@ -10,22 +10,22 @@ import (
 func TestLifetimeUsesFrozenUTCClockAndInclusiveCustomEnd(t *testing.T) {
 	now := frozenNow
 	for _, days := range []int{90, 180, 365, 545, 730} {
-		life, msg := resolveLifetime(options(t, "--create-secret", "--secret-expiry", strconv.Itoa(days)), now)
-		if msg != "" || life == nil {
-			t.Fatalf("%d days: %q", days, msg)
+		life, err := resolveLifetime(options(t, "--create-secret", "--secret-expiry", strconv.Itoa(days)), now)
+		if err != nil || life == nil {
+			t.Fatalf("%d days: %v", days, err)
 		}
 		if life.end.Sub(now) != time.Duration(days)*24*time.Hour || life.start != nil {
 			t.Errorf("%d days: end %v start %v", days, life.end, life.start)
 		}
 	}
-	life, msg := resolveLifetime(options(t, "--create-secret"), now)
-	if msg != "" || life.end.Sub(now) != 180*24*time.Hour {
-		t.Errorf("default lifetime: %v %q", life, msg)
+	life, err := resolveLifetime(options(t, "--create-secret"), now)
+	if err != nil || life.end.Sub(now) != 180*24*time.Hour {
+		t.Errorf("default lifetime: %v %v", life, err)
 	}
-	life, msg = resolveLifetime(options(t,
+	life, err = resolveLifetime(options(t,
 		"--create-secret", "--secret-start", "29/2/2028", "--secret-end", "1/3/2028"), now)
-	if msg != "" {
-		t.Fatal(msg)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if got := life.start.Format(time.RFC3339); got != "2028-02-29T00:00:00Z" {
 		t.Errorf("start = %s", got)
@@ -33,10 +33,10 @@ func TestLifetimeUsesFrozenUTCClockAndInclusiveCustomEnd(t *testing.T) {
 	if got := life.end.Format(time.RFC3339); got != "2028-03-01T23:59:59Z" {
 		t.Errorf("end = %s", got)
 	}
-	life, msg = resolveLifetime(options(t,
+	life, err = resolveLifetime(options(t,
 		"--create-secret", "--secret-start", "28/02/2028", "--secret-end", "29/02/2028"), now)
-	if msg != "" || life.start != nil {
-		t.Errorf("today's start must be omitted: %v %q", life, msg)
+	if err != nil || life.start != nil {
+		t.Errorf("today's start must be omitted: %v %v", life, err)
 	}
 	for _, args := range [][]string{
 		{"--secret-expiry", "90"},
@@ -47,7 +47,7 @@ func TestLifetimeUsesFrozenUTCClockAndInclusiveCustomEnd(t *testing.T) {
 		{"--create-secret", "--secret-start", "1/3/2028", "--secret-end", "29/2/2028"},
 		{"--create-secret", "--secret-end", "29/2/2029"},
 	} {
-		if _, msg := resolveLifetime(options(t, args...), now); msg == "" {
+		if _, err := resolveLifetime(options(t, args...), now); err == nil {
 			t.Errorf("%q accepted", args)
 		}
 	}

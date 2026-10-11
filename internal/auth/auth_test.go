@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/AaronSaikovski/entra-appreg/internal/graph"
 	"os/exec"
 	"strings"
 	"sync"
@@ -118,7 +119,7 @@ func TestCreateDiscoversAndPinsNormalizedTenantAcceptingOpaqueToken(t *testing.T
 	if !strings.HasSuffix(strings.Join(f.calls[0], " "), "az account show --query tenantId --output tsv --only-show-errors") {
 		t.Fatalf("tenant command %v", f.calls[0])
 	}
-	if strings.Join(f.calls[1], " ") != "get-token "+graphScope {
+	if strings.Join(f.calls[1], " ") != "get-token "+graph.Scope {
 		t.Fatalf("token call %v", f.calls[1])
 	}
 	if len(f.credOpts) != 1 || f.credOpts[0] == nil || f.credOpts[0].TenantID != tenant {

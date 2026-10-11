@@ -14,9 +14,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/google/uuid"
-)
 
-const graphScope = "https://graph.microsoft.com/.default"
+	"github.com/AaronSaikovski/entra-appreg/internal/graph"
+)
 
 const (
 	msgNotFound      = "Azure CLI was not found. Install Azure CLI 2.54.0 or newer, then run 'az login'."
@@ -29,8 +29,8 @@ const (
 	msgTimeout       = "Azure CLI authentication timed out."
 )
 
-// Context carries the acquired credential. TenantID is "" unless pinned.
-type Context struct {
+// Session carries the acquired credential. TenantID is "" unless pinned.
+type Session struct {
 	Credential azcore.TokenCredential
 	TenantID   string
 }
@@ -40,7 +40,7 @@ type runFunc func(ctx context.Context, name string, args ...string) ([]byte, err
 type credentialFunc func(*azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error)
 
 // Authenticate checks the Azure CLI login and acquires one Graph token.
-func Authenticate(ctx context.Context, pinTenant bool) (Context, error) {
+func Authenticate(ctx context.Context, pinTenant bool) (Session, error) {
 	return authenticateWith(ctx, pinTenant, runAz, newCLICredential, 10*time.Second)
 }
 
@@ -90,14 +90,14 @@ func currentTenant(ctx context.Context, run runFunc) (string, error) {
 	return id.String(), nil
 }
 
-func authenticateWith(ctx context.Context, pinTenant bool, run runFunc, newCred credentialFunc, deadline time.Duration) (Context, error) {
+func authenticateWith(ctx context.Context, pinTenant bool, run runFunc, newCred credentialFunc, deadline time.Duration) (Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	fail := func(msg string) (Context, error) {
+	fail := func(msg string) (Session, error) {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Context{}, errors.New(msgTimeout)
+			return Session{}, errors.New(msgTimeout)
 		}
-		return Context{}, errors.New(msg)
+		return Session{}, errors.New(msg)
 	}
 
 	tenant, err := currentTenant(ctx, run)
@@ -115,7 +115,7 @@ func authenticateWith(ctx context.Context, pinTenant bool, run runFunc, newCred 
 		return fail(msgInit)
 	}
 	// SDK errors may contain subprocess output; replace rather than wrap them.
-	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{graphScope}})
+	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{graph.Scope}})
 	if err != nil {
 		return fail(msgToken)
 	}
@@ -123,9 +123,9 @@ func authenticateWith(ctx context.Context, pinTenant bool, run runFunc, newCred 
 		return fail(msgEmptyToken)
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return Context{}, errors.New(msgTimeout)
+		return Session{}, errors.New(msgTimeout)
 	}
-	return Context{Credential: staticCredential{token: token}, TenantID: pinned}, nil
+	return Session{Credential: staticCredential{token: token}, TenantID: pinned}, nil
 }
 
 // staticCredential returns the token acquired under the auth deadline.
@@ -134,6 +134,7 @@ type staticCredential struct {
 	token azcore.AccessToken
 }
 
+// GetToken returns the stored token regardless of the request options.
 func (c staticCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
 	return c.token, nil
 }

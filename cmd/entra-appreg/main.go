@@ -49,12 +49,12 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 		return 2
 	}
 	ctx := context.Background()
-	authCtx, err := auth.Authenticate(ctx, opts.Command == cli.CommandCreate)
+	session, err := auth.Authenticate(ctx, opts.Command == cli.CommandCreate)
 	if err != nil {
 		fmt.Fprintf(stderr, "Authentication failed: %v\n", err)
 		return 1
 	}
-	client, err := graph.New(authCtx.Credential)
+	client, err := graph.New(session.Credential)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
@@ -65,9 +65,8 @@ func run(args []string, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 		return 1
 	}
 	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir}
-	if err := app.Run(ctx, opts, client, authCtx.TenantID, env); err != nil {
-		var usage *cli.UsageError
-		if errors.As(err, &usage) {
+	if err := app.Run(ctx, opts, client, session.TenantID, env); err != nil {
+		if usage, ok := errors.AsType[*cli.UsageError](err); ok {
 			fmt.Fprintln(stderr, usage.Message)
 			return 2
 		}

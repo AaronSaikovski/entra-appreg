@@ -24,10 +24,13 @@ import (
 	"github.com/microsoftgraph/msgraph-sdk-go/organization"
 )
 
-const (
-	graphBase  = "https://graph.microsoft.com/v1.0"
-	graphScope = "https://graph.microsoft.com/.default"
-)
+const graphBase = "https://graph.microsoft.com/v1.0"
+
+// Scope is the OAuth scope requested for Microsoft Graph tokens.
+const Scope = "https://graph.microsoft.com/.default"
+
+// errRepeatedNextLink stops a page walk that would revisit a page.
+var errRepeatedNextLink = errors.New("Graph returned a repeated next-page link; stopping.")
 
 // Client is a Microsoft Graph client bound to one trusted base URL.
 type Client struct {
@@ -53,7 +56,7 @@ func NewForBase(cred azcore.TokenCredential, base string) (*Client, error) {
 	u.RawPath = ""
 
 	auth, err := msgraphauth.NewAzureIdentityAuthenticationProviderWithScopesAndValidHosts(
-		cred, []string{graphScope}, []string{u.Hostname()})
+		cred, []string{Scope}, []string{u.Hostname()})
 	if err != nil {
 		return nil, fmt.Errorf("Could not initialize Microsoft Graph client: %w", err)
 	}
@@ -95,8 +98,8 @@ func trustedBase(u *url.URL) bool {
 	}
 }
 
-// IsNotFound reports whether err carries a Graph HTTP 404 response.
-func IsNotFound(err error) bool {
+// isNotFound reports whether err carries a Graph HTTP 404 response.
+func isNotFound(err error) bool {
 	var status *StatusError
 	return errors.As(err, &status) && status.Status == http.StatusNotFound
 }
@@ -104,12 +107,10 @@ func IsNotFound(err error) bool {
 // describe adds request context to a failed SDK call. Graph status errors are
 // returned unchanged so their raw body and guidance stay intact.
 func describe(method, path string, err error) error {
-	var status *StatusError
-	if errors.As(err, &status) {
+	if status, ok := errors.AsType[*StatusError](err); ok {
 		return status
 	}
-	var transport *url.Error
-	if errors.As(err, &transport) {
+	if _, ok := errors.AsType[*url.Error](err); ok {
 		return fmt.Errorf("%s %s failed: %w", method, path, err)
 	}
 	return fmt.Errorf("%s %s returned an invalid response: %w", method, path, err)
@@ -125,10 +126,18 @@ func pathOf(info *abs.RequestInformation, err error) string {
 	if err != nil {
 		return "(invalid request)"
 	}
-	u.RawQuery = strings.ReplaceAll(u.RawQuery, "%24", "$")
-	return requestPath(u)
+	return displayPath(u)
 }
 
+// displayPath renders u's path and query, with "$" query-name prefixes
+// decoded as ParametersNameDecodingHandler sends them.
+func displayPath(u *url.URL) string {
+	decoded := *u
+	decoded.RawQuery = strings.ReplaceAll(u.RawQuery, "%24", "$")
+	return requestPath(&decoded)
+}
+
+// requestPath renders u's escaped path plus "?" and the raw query when present.
 func requestPath(u *url.URL) string {
 	if u.RawQuery != "" {
 		return u.EscapedPath() + "?" + u.RawQuery
@@ -136,16 +145,17 @@ func requestPath(u *url.URL) string {
 	return u.EscapedPath()
 }
 
-func requireError(field string) error {
+// MissingFieldError reports a Graph reply that lacks a required string field.
+func MissingFieldError(field string) error {
 	return fmt.Errorf("Graph response requires an object with string '%s'", field)
 }
 
 func requireApplication(app models.Applicationable) error {
 	if app == nil || app.GetId() == nil {
-		return requireError("id")
+		return MissingFieldError("id")
 	}
 	if app.GetAppId() == nil {
-		return requireError("appId")
+		return MissingFieldError("appId")
 	}
 	return nil
 }
@@ -156,14 +166,14 @@ func (c *Client) GetApplication(ctx context.Context, ref string) (models.Applica
 	byID := c.sdk.Applications().ByApplicationId(ref)
 	app, err := byID.Get(ctx, nil)
 	if err != nil {
-		if !IsNotFound(err) {
+		if !isNotFound(err) {
 			return nil, describe(http.MethodGet, pathOf(byID.ToGetRequestInformation(ctx, nil)), err)
 		}
 		quoted := strings.ReplaceAll(ref, "'", "''")
 		byAppID := c.sdk.ApplicationsWithAppId(&quoted)
 		app, err = byAppID.Get(ctx, nil)
 		if err != nil {
-			if IsNotFound(err) {
+			if isNotFound(err) {
 				return nil, nil
 			}
 			return nil, describe(http.MethodGet, pathOf(byAppID.ToGetRequestInformation(ctx, nil)), err)
@@ -175,7 +185,8 @@ func (c *Client) GetApplication(ctx context.Context, ref string) (models.Applica
 	return app, nil
 }
 
-// Organization returns the signed-in tenant's organization collection.
+// Organization returns the signed-in tenant's organization collection. The
+// result may be nil when Graph sends an empty body; callers validate it.
 func (c *Client) Organization(ctx context.Context) (models.OrganizationCollectionResponseable, error) {
 	builder := c.sdk.Organization()
 	config := &organization.OrganizationRequestBuilderGetRequestConfiguration{
@@ -186,9 +197,6 @@ func (c *Client) Organization(ctx context.Context) (models.OrganizationCollectio
 	orgs, err := builder.Get(ctx, config)
 	if err != nil {
 		return nil, describe(http.MethodGet, pathOf(builder.ToGetRequestInformation(ctx, config)), err)
-	}
-	if orgs == nil {
-		return nil, errors.New("Graph must return exactly one tenant organization.")
 	}
 	return orgs, nil
 }
@@ -214,15 +222,14 @@ func (c *Client) ApplicationPages(
 	seen := map[string]bool{}
 	for {
 		if seen[next] {
-			return errors.New("Graph returned a repeated next-page link; stopping.")
+			return errRepeatedNextLink
 		}
 		seen[next] = true
 		page, err := c.sdk.Applications().WithUrl(next).Get(ctx, nil)
 		if err != nil {
 			path := next
 			if parsed, perr := url.Parse(next); perr == nil {
-				parsed.RawQuery = strings.ReplaceAll(parsed.RawQuery, "%24", "$")
-				path = requestPath(parsed)
+				path = displayPath(parsed)
 			}
 			return describe(http.MethodGet, path, err)
 		}
@@ -231,12 +238,12 @@ func (c *Client) ApplicationPages(
 		}
 		link := ""
 		if raw := page.GetOdataNextLink(); raw != nil && *raw != "" {
-			link, err = c.ValidateNextLink(*raw)
+			link, err = c.validateNextLink(*raw)
 			if err != nil {
 				return err
 			}
 			if seen[link] {
-				return errors.New("Graph returned a repeated next-page link; stopping.")
+				return errRepeatedNextLink
 			}
 		}
 		stop, err := visit(page, link != "")
@@ -250,10 +257,10 @@ func (c *Client) ApplicationPages(
 	}
 }
 
-// ValidateNextLink accepts only links on the client's base origin (same scheme,
+// validateNextLink accepts only links on the client's base origin (same scheme,
 // host, and effective port) beneath the base path, with no credentials or
 // fragment. It returns the normalized link to request.
-func (c *Client) ValidateNextLink(raw string) (string, error) {
+func (c *Client) validateNextLink(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() {
 		return "", errors.New("Graph returned an invalid next-page link")
@@ -320,7 +327,7 @@ func (c *Client) AddPassword(ctx context.Context, objectID string, cred models.P
 		return nil, describe(http.MethodPost, pathOf(builder.ToPostRequestInformation(ctx, body, nil)), err)
 	}
 	if secret == nil {
-		return nil, requireError("secretText")
+		return nil, MissingFieldError("secretText")
 	}
 	return secret, nil
 }

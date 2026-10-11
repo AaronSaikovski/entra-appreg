@@ -13,17 +13,25 @@ type scopeSpec struct {
 	name            string
 	displayName     string
 	description     string
-	scopeType       string // "Admin" or "User"
-	userDisplayName string // set only for User scopes
-	userDescription string // set only for User scopes
+	userConsent     bool   // users may consent; otherwise admins only
+	userDisplayName string // set only when userConsent
+	userDescription string // set only when userConsent
 	enabled         bool
 }
 
-func (s scopeSpec) consentLabel() string {
-	if s.scopeType == "Admin" {
-		return "Admins only"
+// graphType is the Microsoft Graph permissionScope type value.
+func (s scopeSpec) graphType() string {
+	if s.userConsent {
+		return "User"
 	}
-	return "Admins and users"
+	return "Admin"
+}
+
+func (s scopeSpec) consentLabel() string {
+	if s.userConsent {
+		return "Admins and users"
+	}
+	return "Admins only"
 }
 
 func (s scopeSpec) stateLabel() string {
@@ -66,22 +74,22 @@ func trimmedOr(value *string, fallback string) string {
 	return strings.TrimSpace(*value)
 }
 
-// resolveScope validates the --scope-* options. The returned message is a
-// usage error.
-func resolveScope(o *cli.Options, appName string) (scopeSpec, string) {
+// resolveScope validates the --scope-* options. Every returned error is a
+// *cli.UsageError.
+func resolveScope(o *cli.Options, appName string) (scopeSpec, error) {
 	rawName := deref(o.ScopeName, "")
 	name := strings.TrimSpace(rawName)
 	if !validScopeName(name) {
-		return scopeSpec{}, "--scope-name must be 1-120 characters using only letters, digits, '.', '_' and '-', and cannot start with '.', got: " + rawName
+		return scopeSpec{}, &cli.UsageError{Message: "--scope-name must be 1-120 characters using only letters, digits, '.', '_' and '-', and cannot start with '.', got: " + rawName}
 	}
-	scopeType := "Admin"
+	userConsent := false
 	if o.ScopeConsent != nil {
 		switch {
 		case matchesAny(*o.ScopeConsent, "admin", "admins"):
 		case matchesAny(*o.ScopeConsent, "user", "users"):
-			scopeType = "User"
+			userConsent = true
 		default:
-			return scopeSpec{}, "--scope-consent must be 'admins' or 'users', got: " + *o.ScopeConsent
+			return scopeSpec{}, &cli.UsageError{Message: "--scope-consent must be 'admins' or 'users', got: " + *o.ScopeConsent}
 		}
 	}
 	enabled := true
@@ -91,15 +99,15 @@ func resolveScope(o *cli.Options, appName string) (scopeSpec, string) {
 		case matchesAny(*o.ScopeState, "disabled"):
 			enabled = false
 		default:
-			return scopeSpec{}, "--scope-state must be 'enabled' or 'disabled', got: " + *o.ScopeState
+			return scopeSpec{}, &cli.UsageError{Message: "--scope-state must be 'enabled' or 'disabled', got: " + *o.ScopeState}
 		}
 	}
-	if scopeType == "Admin" && (o.ScopeUserDisplayName != nil || o.ScopeUserDescription != nil) {
-		return scopeSpec{}, "--scope-user-display-name and --scope-user-description require --scope-consent users."
+	if !userConsent && (o.ScopeUserDisplayName != nil || o.ScopeUserDescription != nil) {
+		return scopeSpec{}, &cli.UsageError{Message: "--scope-user-display-name and --scope-user-description require --scope-consent users."}
 	}
 	for _, value := range []*string{o.ScopeDisplayName, o.ScopeDescription, o.ScopeUserDisplayName, o.ScopeUserDescription} {
 		if value != nil && strings.TrimSpace(*value) == "" {
-			return scopeSpec{}, "The --scope-*display-name and --scope-*description options cannot be blank."
+			return scopeSpec{}, &cli.UsageError{Message: "The --scope-*display-name and --scope-*description options cannot be blank."}
 		}
 	}
 	spec := scopeSpec{
@@ -107,26 +115,26 @@ func resolveScope(o *cli.Options, appName string) (scopeSpec, string) {
 		displayName: trimmedOr(o.ScopeDisplayName, "Access "+appName),
 		description: trimmedOr(o.ScopeDescription,
 			"Allow the application to access "+appName+" on behalf of the signed-in user."),
-		scopeType: scopeType,
-		enabled:   enabled,
+		userConsent: userConsent,
+		enabled:     enabled,
 	}
-	if scopeType == "User" {
+	if userConsent {
 		spec.userDisplayName = trimmedOr(o.ScopeUserDisplayName, "Access "+appName)
 		spec.userDescription = trimmedOr(o.ScopeUserDescription,
 			"Allow the application to access "+appName+" on your behalf.")
 	}
-	return spec, ""
+	return spec, nil
 }
 
 func buildScope(id uuid.UUID, s scopeSpec) models.PermissionScopeable {
 	scope := models.NewPermissionScope()
 	scope.SetId(&id)
 	scope.SetValue(new(s.name))
-	scope.SetTypeEscaped(new(s.scopeType))
+	scope.SetTypeEscaped(new(s.graphType()))
 	scope.SetIsEnabled(new(s.enabled))
 	scope.SetAdminConsentDisplayName(new(s.displayName))
 	scope.SetAdminConsentDescription(new(s.description))
-	if s.scopeType == "User" {
+	if s.userConsent {
 		scope.SetUserConsentDisplayName(new(s.userDisplayName))
 		scope.SetUserConsentDescription(new(s.userDescription))
 	}

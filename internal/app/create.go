@@ -67,7 +67,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 		fmt.Fprintln(out, "Application not found")
 	}
 	if o.Name == nil || strings.TrimSpace(*o.Name) == "" {
-		return usagef("--name is required when creating an application.")
+		return cli.Usagef("--name is required when creating an application.")
 	}
 	name := *o.Name
 	rawAudience := trimmedOr(o.Audience, "AzureADMyOrg")
@@ -79,14 +79,14 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 		}
 	}
 	if audience == "" {
-		return usagef("--audience must be one of %s, got: %s", strings.Join(audiences, ", "), rawAudience)
+		return cli.Usagef("--audience must be one of %s, got: %s", strings.Join(audiences, ", "), rawAudience)
 	}
 	redirects := []string{}
 	seen := map[string]bool{}
 	for _, uri := range o.RedirectURIs {
 		uri = strings.TrimSpace(uri)
 		if !validRedirect(uri) {
-			return usagef("--redirect-urls must contain absolute http(s) URIs, got: %s", uri)
+			return cli.Usagef("--redirect-urls must contain absolute http(s) URIs, got: %s", uri)
 		}
 		if !seen[uri] {
 			seen[uri] = true
@@ -95,9 +95,9 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 	}
 	var spec *scopeSpec
 	if o.ScopeName != nil {
-		resolved, msg := resolveScope(o, name)
-		if msg != "" {
-			return usagef("%s", msg)
+		resolved, err := resolveScope(o, name)
+		if err != nil {
+			return err
 		}
 		spec = &resolved
 	} else {
@@ -118,15 +118,15 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 			}
 		}
 		if len(orphaned) > 0 {
-			return usagef("%s require --scope-name.", strings.Join(orphaned, ", "))
+			return cli.Usagef("%s require --scope-name.", strings.Join(orphaned, ", "))
 		}
 	}
-	lifetime, msg := resolveLifetime(o, env.Now())
-	if msg != "" {
-		return usagef("%s", msg)
+	lifetime, err := resolveLifetime(o, env.Now())
+	if err != nil {
+		return err
 	}
 
-	err := g.ApplicationPages(ctx, &applications.ApplicationsRequestBuilderGetQueryParameters{
+	err = g.ApplicationPages(ctx, &applications.ApplicationsRequestBuilderGetQueryParameters{
 		Filter: new("displayName eq '" + strings.ReplaceAll(name, "'", "''") + "'"),
 		Select: []string{"id"},
 		Top:    new(int32(1)),
@@ -136,7 +136,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 			return false, errors.New("Graph returned an invalid name-check response.")
 		}
 		if len(matches) > 0 {
-			return false, usagef("An app registration named %q already exists in this tenant. Choose a different --name, or use --appid to reference an existing registration.", name)
+			return false, cli.Usagef("An app registration named %q already exists in this tenant. Choose a different --name, or use --appid to reference an existing registration.", name)
 		}
 		return false, nil
 	})
@@ -191,7 +191,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 		}
 		fmt.Fprintf(&contents, "Application ID URI:      %s\nScope (full name):       %s\nScope ID:                %s\nScope display name:      %s\nScope description:       %s\nScope consent:           %s\nScope state:             %s\n",
 			identifier, fullName, scopeID, spec.displayName, spec.description, spec.consentLabel(), spec.stateLabel())
-		if spec.scopeType == "User" {
+		if spec.userConsent {
 			fmt.Fprintf(&contents, "Scope user display name: %s\nScope user description:  %s\n", spec.userDisplayName, spec.userDescription)
 		}
 	} else {
@@ -213,7 +213,7 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 		}
 		text := secret.GetSecretText()
 		if text == nil {
-			return requireError("secretText")
+			return graph.MissingFieldError("secretText")
 		}
 		// The secret is shown only once: record it even if other fields are missing.
 		key := "(not returned by Graph)"

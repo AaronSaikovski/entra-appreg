@@ -50,15 +50,15 @@ func parseDate(value string) (time.Time, bool) {
 }
 
 // resolveLifetime validates the secret options against now. A nil lifetime
-// means no secret was requested. The returned message is a usage error.
-func resolveLifetime(o *cli.Options, now time.Time) (*secretLifetime, string) {
+// means no secret was requested. Every returned error is a *cli.UsageError.
+func resolveLifetime(o *cli.Options, now time.Time) (*secretLifetime, error) {
 	now = now.UTC()
 	dates := o.SecretStart != nil || o.SecretEnd != nil
 	if !o.CreateSecret {
 		if dates || o.SecretExpiry != nil {
-			return nil, "--secret-expiry, --secret-start and --secret-end require --create-secret."
+			return nil, &cli.UsageError{Message: "--secret-expiry, --secret-start and --secret-end require --create-secret."}
 		}
-		return nil, ""
+		return nil, nil
 	}
 	mode := "180"
 	if o.SecretExpiry != nil {
@@ -68,39 +68,39 @@ func resolveLifetime(o *cli.Options, now time.Time) (*secretLifetime, string) {
 	}
 	if cli.EqualFoldASCII(mode, "custom") {
 		if o.SecretEnd == nil {
-			return nil, "--secret-end (DD/MM/YYYY) is required for a custom secret lifetime."
+			return nil, &cli.UsageError{Message: "--secret-end (DD/MM/YYYY) is required for a custom secret lifetime."}
 		}
 		end, ok := parseDate(*o.SecretEnd)
 		if !ok {
-			return nil, "--secret-end must be a date in DD/MM/YYYY format, got: " + *o.SecretEnd
+			return nil, &cli.UsageError{Message: "--secret-end must be a date in DD/MM/YYYY format, got: " + *o.SecretEnd}
 		}
 		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		start := today
 		if o.SecretStart != nil {
 			if start, ok = parseDate(*o.SecretStart); !ok {
-				return nil, "--secret-start must be a date in DD/MM/YYYY format, got: " + *o.SecretStart
+				return nil, &cli.UsageError{Message: "--secret-start must be a date in DD/MM/YYYY format, got: " + *o.SecretStart}
 			}
 		}
 		if start.Before(today) {
-			return nil, "--secret-start cannot be in the past (today is " + today.Format("02/01/2006") + " UTC)."
+			return nil, &cli.UsageError{Message: "--secret-start cannot be in the past (today is " + today.Format("02/01/2006") + " UTC)."}
 		}
 		if !end.After(start) {
-			return nil, "--secret-end must be after --secret-start."
+			return nil, &cli.UsageError{Message: "--secret-end must be after --secret-start."}
 		}
 		life := &secretLifetime{end: end.Add(23*time.Hour + 59*time.Minute + 59*time.Second)}
 		if start.After(today) {
 			life.start = &start
 		}
-		return life, ""
+		return life, nil
 	}
 	days, err := strconv.ParseInt(mode, 10, 64)
 	if err != nil || !slices.Contains([]int64{90, 180, 365, 545, 730}, days) {
-		return nil, "--secret-expiry must be one of 90, 180, 365, 545, 730 or custom, got: " + deref(o.SecretExpiry, "")
+		return nil, &cli.UsageError{Message: "--secret-expiry must be one of 90, 180, 365, 545, 730 or custom, got: " + deref(o.SecretExpiry, "")}
 	}
 	if dates {
-		return nil, "--secret-start and --secret-end can only be used with --secret-expiry custom."
+		return nil, &cli.UsageError{Message: "--secret-start and --secret-end can only be used with --secret-expiry custom."}
 	}
-	return &secretLifetime{end: now.Add(time.Duration(days) * 24 * time.Hour)}, ""
+	return &secretLifetime{end: now.Add(time.Duration(days) * 24 * time.Hour)}, nil
 }
 
 // secretDescription is "{appName} secret" cut to at most 128 UTF-16 code

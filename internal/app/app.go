@@ -5,7 +5,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
@@ -34,14 +33,6 @@ func Run(ctx context.Context, opts *cli.Options, g *graph.Client, tenantID strin
 	default:
 		return create(ctx, opts, g, tenantID, env)
 	}
-}
-
-func usagef(format string, args ...any) *cli.UsageError {
-	return &cli.UsageError{Message: fmt.Sprintf(format, args...)}
-}
-
-func requireError(field string) error {
-	return fmt.Errorf("Graph response requires an object with string '%s'", field)
 }
 
 func deref(s *string, fallback string) string {

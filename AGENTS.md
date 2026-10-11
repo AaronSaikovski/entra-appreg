@@ -39,7 +39,8 @@ Requests are sequential. The context is `context.Background()`; only auth has an
   - `statusHandler` turns every non-2xx response into `*StatusError` carrying the raw body. The 403 guidance and the `Application.Read.All` hint (GET `/applications` only) live in `status.go`.
   - `describe()` wraps all other failures.
   - `GetApplication` tries the object ID first, then the `appId` alternate key, but only after a 404. Two 404s return `(nil, nil)`.
-  - `ApplicationPages` rejects repeated next links. `ValidateNextLink` requires the same scheme, host and port, no userinfo or fragment, and a path under `/v1.0/`.
+  - `ApplicationPages` rejects repeated next links. `validateNextLink` requires the same scheme, host and port, no userinfo or fragment, and a path under `/v1.0/`. `internal/graph/export_test.go` exposes unexported helpers to the external `graph_test` package.
+  - `graph.MissingFieldError` and `cli.Usagef` are the single shared helpers for missing-field and usage errors. `graph.Scope` is the only Graph scope constant. `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`.
   - The base URL is fixed. `NewForBase` exists only for loopback tests; do not add an endpoint override.
 - **Backing-store rule.** msgraph models fetched from Graph serialize only fields changed after the fetch.
   - Build every POST/PATCH body from fresh `models.New…()` objects. Never mutate and resend a fetched model.
@@ -121,22 +122,21 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 ## Important Files
 
 - `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate.
-- `internal/cli/version.go`: `const Version`, the only version source. It is used by `--version`, the help heading, `main_test.go`, and the CI smoke regex. The README "Version" line must be bumped by hand. No release workflow checks the tag against it, despite what the comment says.
+- `internal/cli/version.go`: `const Version`, the only version source. It is used by `--version`, the help heading, `main_test.go`, and the CI smoke regex, and `release.yml` requires the tag to equal `v` + `Version`. The README "Version" line must be bumped by hand.
 - `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
-- `go.mod`: `go 1.27.1`. Main direct deps: cobra/pflag, azidentity/azcore, msgraph-sdk-go(-core), kiota-http/abstractions, uuid, x/term.
+- `go.mod`: `go 1.27.2`. Main direct deps: cobra/pflag, azidentity/azcore, msgraph-sdk-go(-core), kiota-http/abstractions, uuid, x/term.
 - `Taskfile.yml`: dev tasks.
-- `.github/workflows/ci.yml`: the only valid CI. Runs on Linux, macOS and Windows: gofmt, vet, build, test, and a Python binary smoke.
+- `.goreleaser.yaml`: release builds and archives. Validate it with `goreleaser check`. `staticcheck.conf` disables only the error-string style checks.
+- `.github/workflows/`: all workflows use `go-version-file: go.mod`.
+  - `ci.yml`: runs on Linux, macOS and Windows: gofmt, vet, build, test, and a Python binary smoke.
+  - `build.yml`: vet, fmt diff, build, and `goreleaser check`.
+  - `test.yml`: race tests, vet, staticcheck (pinned to a Go-1.27-compatible commit), and govulncheck.
+  - `release.yml`: tag/version guard, quality gates, and GoReleaser.
 - `.gitignore`: ignores `*.txt` (reports may contain plaintext secrets), `/bin/`, `/build/`, `/dist/` and root binaries.
 
 ## Runtime/Tooling Preferences
 
-- **Go.** Use Go per `go.mod` (1.27.1; newer local Go downloads it automatically) with Go modules and `go.sum`. Optionally install Task (taskfile.dev). Python 3.12 is used only by CI smoke scripts.
-- **Azure CLI.** Live use needs Azure CLI 2.54.0+ on `PATH` and a deliberately chosen `az login` identity with Graph permissions. There is no automatic login and no environment-secret fallback. Help and version need no login.
-- **Broken workflows.** These are owner-managed; check with the owner before relying on or changing them:
-  - `build.yml` builds `./cmd/gogoodwe`, which doesn't exist.
-  - `test.yml` runs `./tests/...`, which doesn't exist.
-  - `release.yml` and `goreleaser.yml` both run on `v*` tags, and there is no `.goreleaser.yaml`.
-  - All four pin Go 1.26.
+- **Go.** Use Go per `go.mod` (1.27.2; newer local Go downloads it automatically) with Go modules and `go.sum`. Optionally install Task (taskfile.dev). Python 3.12 is used only by CI smoke scripts. Before raising the Go version, check that the pinned staticcheck commit in `test.yml`/`Taskfile.yml` still loads the code.
 
 ## Testing & QA
 

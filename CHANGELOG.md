@@ -6,19 +6,35 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
-- The Go module now lives at the repository root, with module path `github.com/AaronSaikovski/entra-appreg`, and the Rust code is deleted. CI, `.gitignore`, README, AGENTS.md and `Taskfile.yml` were updated for this layout. `task check` passed on macOS: gofmt, vet (native and Windows), build, tests, and a smoke of `--version`, `delete --help` and `list --top 0` (exit 2).
-- Go port in `src/go`, now the released binary. It uses Cobra for the CLI, Azure SDK for Go `azidentity.AzureCLICredential` for auth, and `msgraph-sdk-go` for Graph. Messages, ordering, exit codes and report layout match the Rust code. Changes from Rust:
+- Rewrote README for the Go CLI at version 0.0.1 (testing). It now covers install (release archives or source), auth, command reference, reports and secrets, limits, permissions and troubleshooting, development, CI/release and the smoke checklist. Per-change verification history moved out of the README; it stays in this changelog.
+- GitHub Actions updated for the Go layout:
+  - `release.yml` checks that the tag equals `v` + `Version`, runs the quality gates, and then runs GoReleaser with a new `.goreleaser.yaml`. It no longer deletes existing releases or passes `--force`.
+  - `goreleaser.yml` was a duplicate trigger on the same tags and has been removed.
+  - `build.yml` builds `./cmd/entra-appreg` and runs `goreleaser check`.
+  - `test.yml` runs `go test -race ./...` (there is no `./tests` directory), staticcheck pinned to a Go-1.27-compatible commit with `staticcheck.conf`, and govulncheck.
+  - All workflows take Go from `go.mod`.
+  - Security: govulncheck found reachable vulnerabilities in `golang.org/x/net` v0.58.0 and in the Go 1.27.1 standard library (`net/http`). The fix moved `go.mod` to Go 1.27.2 and `x/net` to v0.60.0+.
+  - Verification on macOS:
+    - `task check` passed; staticcheck and actionlint (all workflows) are clean; govulncheck reports no called vulnerabilities.
+    - `goreleaser check` and `goreleaser release --snapshot` produced all five archives plus the checksums file, each archive holding the binary, README and LICENSE.
+    - The tag guard accepted `v0.0.1` and rejected `v1.0.1`.
+    - Hosted runs were not exercised.
+- The Go port at the repository root (module `github.com/AaronSaikovski/entra-appreg`) is now the CLI. Its version is reset to `0.0.1` while it is in testing (`internal/cli/version.go`); the 1.0.x entries below are for the former Rust implementation. It uses Cobra for the command line, the Azure SDK for Go `azidentity.AzureCLICredential` for auth, and `msgraph-sdk-go` for Graph. Messages, ordering, exit codes and report layout match the Rust implementation, which has been deleted. Changes from Rust:
   - List text output quotes display names, so control characters are escaped.
   - A missing `keyId` in the `addPassword` reply no longer loses the secret: it is written to the report and the command then exits 1.
   - Windows reserved device names get a `_` prefix in report filenames.
   - Next-page links must stay under `/v1.0/`.
   - Effects of using the typed SDK are listed under README operational limits.
-- Moved Rust to `src/rust` as an unreleased reference, with `[[bin]] path = "main.rs"`. `.gitignore` now ignores `target/` at any depth and the Go build outputs. The Rust review fixes were dropped by user decision.
-- CI has `Go checks` and `Rust checks` jobs on Linux, macOS and Windows; both smoke tests check that non-terminal `delete` exits 2. The user replaced `release.yml` with a GoReleaser workflow and added `build.yml`, `test.yml` and `goreleaser.yml`. Those files were not changed or verified here.
-- Verification on macOS:
-  - Go: `gofmt`, `go vet` (native and `GOOS=windows`), `go build` and `go test ./...` passed in all packages. A real-binary smoke checked version, help precedence, `--name=x`/missing-value rejection, `list --top 0`, non-terminal delete, no-args (exit 2), and missing `az` (exit 1). The Go and Rust CI smoke scripts and `actionlint ci.yml` passed locally.
-  - Rust: fmt, strict Clippy and 55 tests passed in `src/rust`.
-  - Not verified: live Azure, Windows/Linux runs, and the Windows-only reserved-name test (compiled only).
+- CI runs a `Go checks` job on Linux, macOS and Windows. Its smoke test checks the version, the help topics, and that `list --top 0` and non-terminal `delete` exit 2. `.gitignore`, README, AGENTS.md and `Taskfile.yml` (including a new `task check`) describe the root layout. The user-owned `release.yml`, `build.yml`, `test.yml` and `goreleaser.yml` were not changed or verified.
+- Verification on macOS: `task check` passed (gofmt, vet native and `GOOS=windows`, build, tests, binary smoke). A real-binary smoke checked help precedence, rejection of `--name=x` and of a missing value, no arguments (exit 2), and missing `az` (exit 1). `actionlint` passed on `ci.yml`. Not verified: live Azure, Windows/Linux runs, and the Windows-only reserved-name test (compiled only).
+- Two-axis review of the uncommitted Go port against `HEAD`, followed by an idiomatic refactor with no behavior change:
+  - `resolveScope`/`resolveLifetime` return `error`.
+  - `cli.Usagef`, `graph.MissingFieldError` and `graph.Scope` are the single shared helpers.
+  - `displayPath` and `errRepeatedNextLink` replace duplicated code. List alone checks the organization count.
+  - The scope type is now a typed `userConsent` bool, and `auth.Context` is renamed `auth.Session`.
+  - Test-only graph exports moved to `export_test.go`, and doc comments were added.
+  - The doc comment on `Version`, a no-op CI `working-directory`, and stale CHANGELOG/README text were corrected.
+  - Verification: `task check` passed. staticcheck reports only ST1005 for the intentionally preserved user-facing messages (53 before, 48 after). A binary smoke confirmed messages and exit codes are unchanged.
 
 ### Review
 

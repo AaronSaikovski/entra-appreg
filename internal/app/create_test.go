@@ -152,8 +152,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "keyId") {
 					t.Fatalf("err = %v", err)
 				}
-				var usage *cli.UsageError
-				if errors.As(err, &usage) {
+				if _, ok := errors.AsType[*cli.UsageError](err); ok {
 					t.Error("missing keyId must be a runtime error")
 				}
 				report := readReport(t, reportPath)
@@ -263,8 +262,7 @@ func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
 		ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
 		ok(obj{"value": arr{obj{"id": "existing"}}}))
 	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
-	var usage *cli.UsageError
-	if !errors.As(err, &usage) {
+	if _, ok := errors.AsType[*cli.UsageError](err); !ok {
 		t.Fatalf("err = %v, want a usage error", err)
 	}
 	requests := f.Requests()

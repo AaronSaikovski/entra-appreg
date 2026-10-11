@@ -26,9 +26,9 @@ func exposeAPI(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 	}
 	objectID, clientID := *app.GetId(), *app.GetAppId()
 	name := deref(app.GetDisplayName(), reference)
-	spec, msg := resolveScope(o, name)
-	if msg != "" {
-		return usagef("%s", msg)
+	spec, err := resolveScope(o, name)
+	if err != nil {
+		return err
 	}
 	fetched := app.GetApi()
 	if fetched != nil {

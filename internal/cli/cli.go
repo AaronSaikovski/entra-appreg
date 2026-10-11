@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -71,9 +72,11 @@ type Options struct {
 // UsageError reports invalid command-line input (exit code 2).
 type UsageError struct{ Message string }
 
+// Error returns the message unchanged.
 func (e *UsageError) Error() string { return e.Message }
 
-func usagef(format string, args ...any) *UsageError {
+// Usagef returns a *UsageError with a fmt.Sprintf-formatted message.
+func Usagef(format string, args ...any) *UsageError {
 	return &UsageError{Message: fmt.Sprintf(format, args...)}
 }
 
@@ -126,7 +129,7 @@ func Parse(args []string) (Invocation, error) {
 			case "delete":
 				return Invocation{Kind: KindHelp, Topic: TopicDelete}, nil
 			default:
-				return Invocation{}, usagef("No help for '%s'. Try: help, help create, help expose-api, help list, help delete.", topic)
+				return Invocation{}, Usagef("No help for '%s'. Try: help, help create, help expose-api, help list, help delete.", topic)
 			}
 		case "create":
 			command = CommandCreate
@@ -137,15 +140,13 @@ func Parse(args []string) (Invocation, error) {
 		case "delete":
 			command = CommandDelete
 		default:
-			return Invocation{}, usagef("Unknown command: %s. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help).", word)
+			return Invocation{}, Usagef("Unknown command: %s. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help).", word)
 		}
 		commandName = word
 		args = args[1:]
 	}
-	for _, arg := range args {
-		if arg == "--version" {
-			return Invocation{Kind: KindVersion}, nil
-		}
+	if slices.Contains(args, "--version") {
+		return Invocation{Kind: KindVersion}, nil
 	}
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" {
@@ -171,7 +172,7 @@ func Parse(args []string) (Invocation, error) {
 	// pflag accepts --option=value and the -- terminator; this CLI does not.
 	for _, arg := range args {
 		if arg == "--" || (strings.HasPrefix(arg, "--") && strings.Contains(arg, "=")) {
-			return Invocation{}, usagef("Unknown or incomplete argument: %s. Run with --help for usage.", arg)
+			return Invocation{}, Usagef("Unknown or incomplete argument: %s. Run with --help for usage.", arg)
 		}
 	}
 
@@ -211,14 +212,14 @@ func validate(o *Options) error {
 	raw := o.RedirectURIs
 	o.RedirectURIs = nil
 	for _, value := range raw {
-		for _, part := range strings.Split(value, ",") {
+		for part := range strings.SplitSeq(value, ",") {
 			if part = strings.TrimSpace(part); part != "" {
 				o.RedirectURIs = append(o.RedirectURIs, part)
 			}
 		}
 	}
 	if o.AppID != nil && strings.TrimSpace(*o.AppID) == "" {
-		return usagef("--appid cannot be blank; omit it when creating a new application.")
+		return Usagef("--appid cannot be blank; omit it when creating a new application.")
 	}
 	secretOptions := []namedOption{
 		{"--create-secret", o.CreateSecret},
@@ -239,7 +240,7 @@ func validate(o *Options) error {
 	missingID := o.AppID == nil || *o.AppID == "no-id"
 	if o.Command == CommandDelete {
 		if missingID {
-			return usagef("delete requires --appid <application object id or client id>.")
+			return Usagef("delete requires --appid <application object id or client id>.")
 		}
 		forbidden := suppliedNames([]namedOption{
 			{"--name", o.Name != nil},
@@ -247,15 +248,15 @@ func validate(o *Options) error {
 			{"--audience", o.Audience != nil},
 		}, scopeOptions, secretOptions, listOptions)
 		if len(forbidden) > 0 {
-			return usagef("%s can't be used with the delete command.", strings.Join(forbidden, ", "))
+			return Usagef("%s can't be used with the delete command.", strings.Join(forbidden, ", "))
 		}
 	}
 	if o.Command == CommandExposeAPI {
 		if missingID {
-			return usagef("expose-api requires --appid <application object id or client id>.")
+			return Usagef("expose-api requires --appid <application object id or client id>.")
 		}
 		if o.ScopeName == nil || strings.TrimSpace(*o.ScopeName) == "" {
-			return usagef("expose-api requires --scope-name.")
+			return Usagef("expose-api requires --scope-name.")
 		}
 		forbidden := suppliedNames([]namedOption{
 			{"--name", o.Name != nil},
@@ -263,7 +264,7 @@ func validate(o *Options) error {
 			{"--audience", o.Audience != nil},
 		}, secretOptions, listOptions)
 		if len(forbidden) > 0 {
-			return usagef("%s can't be used with the expose-api command.", strings.Join(forbidden, ", "))
+			return Usagef("%s can't be used with the expose-api command.", strings.Join(forbidden, ", "))
 		}
 	}
 	if o.Command == CommandList {
@@ -273,10 +274,10 @@ func validate(o *Options) error {
 			{"--audience", o.Audience != nil},
 		}, scopeOptions, secretOptions)
 		if len(forbidden) > 0 {
-			return usagef("%s can't be used with the list command.", strings.Join(forbidden, ", "))
+			return Usagef("%s can't be used with the list command.", strings.Join(forbidden, ", "))
 		}
 		if o.Name != nil && strings.TrimSpace(*o.Name) == "" {
-			return usagef("--name cannot be blank.")
+			return Usagef("--name cannot be blank.")
 		}
 		if o.Top != nil {
 			trimmed := strings.TrimSpace(*o.Top)
@@ -285,11 +286,11 @@ func validate(o *Options) error {
 			} else if n, err := strconv.ParseInt(trimmed, 10, 32); err == nil && n > 0 {
 				o.ListLimit = int(n)
 			} else {
-				return usagef("--top must be a positive whole number or 'all', got: %s", *o.Top)
+				return Usagef("--top must be a positive whole number or 'all', got: %s", *o.Top)
 			}
 		}
 	} else if o.Top != nil || o.JSON {
-		return usagef("%s can only be used with the list command.", strings.Join(suppliedNames(listOptions), ", "))
+		return Usagef("%s can only be used with the list command.", strings.Join(suppliedNames(listOptions), ", "))
 	}
 	return nil
 }
@@ -297,8 +298,7 @@ func validate(o *Options) error {
 // asUsageError returns err itself when it is a *UsageError, and otherwise
 // wraps its text in the standard usage hint.
 func asUsageError(err error) *UsageError {
-	var usage *UsageError
-	if errors.As(err, &usage) {
+	if usage, ok := errors.AsType[*UsageError](err); ok {
 		return usage
 	}
 	return &UsageError{Message: strings.TrimSuffix(err.Error(), ".") + ". Run with --help for usage."}

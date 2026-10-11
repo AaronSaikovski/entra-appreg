@@ -37,13 +37,13 @@ func TestRedirectsRequireExplicitHTTPAuthorityWithoutRepair(t *testing.T) {
 
 func TestScopeBoundariesAndConsentContradictions(t *testing.T) {
 	for _, name := range []string{"", ".read", "a b", "é", strings.Repeat("a", 121)} {
-		if _, msg := resolveScope(options(t, "--scope-name", name), "App"); msg == "" {
+		if _, err := resolveScope(options(t, "--scope-name", name), "App"); err == nil {
 			t.Errorf("scope name %q accepted", name)
 		}
 	}
-	spec, msg := resolveScope(options(t, "--scope-name", strings.Repeat("a", 120)), "App")
-	if msg != "" || len(spec.name) != 120 {
-		t.Fatalf("120-character name: %q, %q", spec.name, msg)
+	spec, err := resolveScope(options(t, "--scope-name", strings.Repeat("a", 120)), "App")
+	if err != nil || len(spec.name) != 120 {
+		t.Fatalf("120-character name: %q, %v", spec.name, err)
 	}
 	if buildScope(uuid.New(), spec).GetUserConsentDescription() != nil {
 		t.Error("admin scope carries a user consent description")
@@ -55,14 +55,14 @@ func TestScopeBoundariesAndConsentContradictions(t *testing.T) {
 		{"--scope-name", "read", "--scope-state", ""},
 		{"--scope-name", "read", "--scope-consent", "users", "--scope-user-description", ""},
 	} {
-		if _, msg := resolveScope(options(t, args...), "App"); msg == "" {
+		if _, err := resolveScope(options(t, args...), "App"); err == nil {
 			t.Errorf("%q accepted", args)
 		}
 	}
-	spec, msg = resolveScope(options(t,
+	spec, err = resolveScope(options(t,
 		"--scope-name", " read ", "--scope-consent", " USERS ", "--scope-state", "disabled"), "My App")
-	if msg != "" {
-		t.Fatal(msg)
+	if err != nil {
+		t.Fatal(err)
 	}
 	scope := buildScope(uuid.New(), spec)
 	if *scope.GetValue() != "read" || *scope.GetTypeEscaped() != "User" || *scope.GetIsEnabled() {

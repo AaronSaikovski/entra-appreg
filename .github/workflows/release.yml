@@ -6,29 +6,49 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      - name: Delete existing release
-        run: gh release delete "${{ github.ref_name }}" --yes --cleanup-tag || true
+      - name: Validate tag against internal/cli/version.go
+        run: |
+          version=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/cli/version.go)
+          if [[ "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME must equal v$version (internal/cli/version.go). Update the version before tagging." >&2
+            exit 1
+          fi
+
+      - name: Quality gates
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean --force
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

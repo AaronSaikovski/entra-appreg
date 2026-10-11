@@ -76,12 +76,10 @@ func TestConcurrentWritersEachClaimADistinctCompleteReport(t *testing.T) {
 	paths := make([]string, workers)
 	errs := make([]error, workers)
 	for i := range workers {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 			paths[i], errs[i] = Write(dir, "example", "fake secret "+string(rune('0'+i)))
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()

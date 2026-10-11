@@ -23,13 +23,13 @@ func deleteApp(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 	}
 	objectID, clientID := *app.GetId(), *app.GetAppId()
 	name := deref(app.GetDisplayName(), "(unnamed)")
-	out := env.Stderr
+	prompt := env.Stderr
 	// Quote remote fields so terminal control characters cannot disguise the target.
-	if _, err := fmt.Fprintf(out, "Delete this app registration?\n  Name: %s\n  Object ID: %s\n  Application (client) ID: %s\nDeletion can interrupt applications using this registration.\n",
+	if _, err := fmt.Fprintf(prompt, "Delete this app registration?\n  Name: %s\n  Object ID: %s\n  Application (client) ID: %s\nDeletion can interrupt applications using this registration.\n",
 		strconv.Quote(name), strconv.Quote(objectID), strconv.Quote(clientID)); err != nil {
 		return fmt.Errorf("Could not display deletion target: %w", err)
 	}
-	if _, err := io.WriteString(out, "Type 'yes' to delete; any other answer cancels: "); err != nil {
+	if _, err := io.WriteString(prompt, "Type 'yes' to delete; any other answer cancels: "); err != nil {
 		return fmt.Errorf("Could not display deletion prompt: %w", err)
 	}
 	answer, err := bufio.NewReader(env.Stdin).ReadString('\n')
@@ -37,7 +37,7 @@ func deleteApp(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 		return fmt.Errorf("Could not read deletion confirmation; nothing was deleted: %w", err)
 	}
 	if answer != "yes\n" && answer != "yes\r\n" {
-		if _, err := io.WriteString(out, "Deletion cancelled. Nothing was deleted.\n"); err != nil {
+		if _, err := io.WriteString(prompt, "Deletion cancelled. Nothing was deleted.\n"); err != nil {
 			return fmt.Errorf("Could not display deletion cancellation: %w", err)
 		}
 		return nil
@@ -45,7 +45,7 @@ func deleteApp(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 	if err := g.DeleteApplication(ctx, objectID); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "Deleted application %s (Application (client) ID: %s).\n",
+	if _, err := fmt.Fprintf(prompt, "Deleted application %s (Application (client) ID: %s).\n",
 		strconv.Quote(objectID), strconv.Quote(clientID)); err != nil {
 		return fmt.Errorf("Application was deleted, but could not display completion: %w", err)
 	}

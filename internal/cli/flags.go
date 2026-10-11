@@ -40,10 +40,7 @@ func (o optionalString) Set(v string) error {
 func (optionalString) Type() string { return "string" }
 
 // redirectList accumulates every raw --redirect-urls value in order.
-type redirectList struct {
-	target   *[]string
-	supplied *bool
-}
+type redirectList struct{ target *[]string }
 
 func (r redirectList) String() string { return strings.Join(*r.target, ",") }
 
@@ -52,7 +49,6 @@ func (r redirectList) Set(v string) error {
 		return errors.New(followingLongOption)
 	}
 	*r.target = append(*r.target, v)
-	*r.supplied = true
 	return nil
 }
 
@@ -112,7 +108,7 @@ func parseFlags(commandName string, args []string) (*Options, error) {
 	} {
 		flags.Var(optionalString{f.target}, f.name, "")
 	}
-	flags.Var(redirectList{&opts.RedirectURIs, &opts.RedirectsSupplied}, "redirect-urls", "")
+	flags.Var(redirectList{&opts.RedirectURIs}, "redirect-urls", "")
 	flags.BoolVar(&opts.JSON, "json", false, "")
 	flags.BoolVar(&opts.CreateSecret, "create-secret", false, "")
 	// Replace Cobra's default help flag so it has no -h shorthand: Parse

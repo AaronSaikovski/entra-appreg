@@ -11,8 +11,7 @@ import (
 func parseWords(words ...string) (Invocation, error) {
 	inv, err := Parse(words)
 	if err != nil {
-		var usage *UsageError
-		if !errors.As(err, &usage) {
+		if _, ok := errors.AsType[*UsageError](err); !ok {
 			panic("Parse returned a non-UsageError: " + err.Error())
 		}
 	}

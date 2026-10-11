@@ -21,6 +21,7 @@ type StatusError struct {
 	applicationsPath string
 }
 
+// Error renders the status line and raw body; HTTP 403 adds access guidance.
 func (e *StatusError) Error() string {
 	if e.Status == http.StatusForbidden {
 		permission := ""
@@ -54,6 +55,7 @@ type statusHandler struct {
 	applicationsPath string
 }
 
+// Intercept implements khttp.Middleware.
 func (h *statusHandler) Intercept(p khttp.Pipeline, i int, req *http.Request) (*http.Response, error) {
 	resp, err := p.Next(req, i)
 	if err != nil || (resp.StatusCode >= 200 && resp.StatusCode <= 299) {
