@@ -3,12 +3,10 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 	"github.com/AaronSaikovski/entra-appreg/internal/graphtest"
 )
 
@@ -58,6 +56,20 @@ func TestExposePreservesExistingAPIAndIdentifierURIs(t *testing.T) {
 	}
 }
 
+// assertExposeFailsBeforePatch runs expose-api against a single GET reply and
+// requires a runtime error with no PATCH sent.
+func assertExposeFailsBeforePatch(t *testing.T, appJSON string) {
+	t.Helper()
+	f := graphtest.New(t, raw(200, appJSON))
+	err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env)
+	if err == nil || isUsage(err) {
+		t.Errorf("err = %v, want a runtime error", err)
+	}
+	if requests := f.Requests(); len(requests) != 1 || requests[0].Method != "GET" {
+		t.Errorf("requests = %+v", requests)
+	}
+}
+
 func TestExposeDuplicateOrMalformedAPINeverPatches(t *testing.T) {
 	for _, api := range []string{
 		// An "api" that is a JSON string is not tested: Kiota parses it
@@ -66,29 +78,17 @@ func TestExposeDuplicateOrMalformedAPINeverPatches(t *testing.T) {
 		`{"oauth2PermissionScopes":{}}`,
 		`{"oauth2PermissionScopes":[{"value":123}]}`,
 	} {
-		f := graphtest.New(t, raw(200, `{"id":"object","appId":"client","api":`+api+`}`))
-		err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env)
-		var usage *cli.UsageError
-		if err == nil || errors.As(err, &usage) {
-			t.Errorf("api %s: err = %v, want a runtime error", api, err)
-		}
-		if requests := f.Requests(); len(requests) != 1 || requests[0].Method != "GET" {
-			t.Errorf("api %s: requests = %+v", api, requests)
-		}
+		t.Run(api, func(t *testing.T) {
+			assertExposeFailsBeforePatch(t, `{"id":"object","appId":"client","api":`+api+`}`)
+		})
 	}
 }
 
 func TestExposeRejectsMalformedIdentifierURICollectionsBeforePatch(t *testing.T) {
 	for _, uris := range []string{`"api://existing"`, `{}`, `42`, `false`} {
-		f := graphtest.New(t, raw(200, `{"id":"object","appId":"client","identifierUris":`+uris+`}`))
-		err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env)
-		var usage *cli.UsageError
-		if err == nil || errors.As(err, &usage) {
-			t.Errorf("uris %s: err = %v, want a runtime error", uris, err)
-		}
-		if requests := f.Requests(); len(requests) != 1 || requests[0].Method != "GET" {
-			t.Errorf("uris %s: requests = %+v", uris, requests)
-		}
+		t.Run(uris, func(t *testing.T) {
+			assertExposeFailsBeforePatch(t, `{"id":"object","appId":"client","identifierUris":`+uris+`}`)
+		})
 	}
 }
 
@@ -106,5 +106,26 @@ func TestExposeMissingURIUsesClientIDAndNullNameUsesReference(t *testing.T) {
 	scope := patch["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)
 	if scope["adminConsentDisplayName"] != "Access reference" {
 		t.Errorf("adminConsentDisplayName = %v", scope["adminConsentDisplayName"])
+	}
+}
+
+func TestExposeOutputIsExact(t *testing.T) {
+	f := graphtest.New(t, ok(obj{"id": "object", "appId": "client", "displayName": "App"}), raw(204, ""))
+	tio := newTestIO(t, "")
+	if err := exposeAPI(context.Background(), options(t, "expose-api", "--appid", "object", "--scope-name", "read", "--scope-consent", "users", "--scope-state", "disabled"), f.Client(t), tio.env); err != nil {
+		t.Fatal(err)
+	}
+	scopeID, _ := decode(t, f.Requests()[1])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
+	want := "Looking up application object\n" +
+		"Adding scope 'api://client/read' to 'App' (Admins and users, Disabled)\n" +
+		"AUTH_APP_ID=object\n" +
+		"AUTH_CLIENT_ID=client\n" +
+		"Application ID URI: api://client\n" +
+		"Scope (full name):  api://client/read\n" +
+		"Scope ID:           " + scopeID + "\n" +
+		"Scope consent:      Admins and users\n" +
+		"Scope state:        Disabled\n"
+	if got := tio.stdout.String(); got != want {
+		t.Errorf("stdout:\n got %q\nwant %q", got, want)
 	}
 }

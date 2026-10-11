@@ -4,12 +4,15 @@ package report
 
 import "strings"
 
+// illegalRune reports whether r cannot appear in a Windows file name: control
+// characters and the characters Win32 reserves for paths and wildcards.
 func illegalRune(r rune) bool {
 	return r <= 0x1f || strings.ContainsRune("<>:\"/\\|?*", r)
 }
 
 // reservedName reports whether name would open a Windows device (NUL, CON,
-// COM1, ...): the text before the first '.', without trailing spaces.
+// COM1, ...) instead of a file. Windows matches the text before the first '.',
+// ignoring case and trailing spaces, so "nul.txt" is still the NUL device.
 func reservedName(name string) bool {
 	stem, _, _ := strings.Cut(name, ".")
 	stem = strings.ToUpper(strings.TrimRight(stem, " "))

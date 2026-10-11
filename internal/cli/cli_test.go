@@ -8,11 +8,14 @@ import (
 	"testing"
 )
 
-func parseWords(words ...string) (Invocation, error) {
+// parse calls Parse and fails the test if it returns an error that is not a
+// *UsageError, since main maps only usage errors to exit code 2.
+func parse(t *testing.T, words ...string) (Invocation, error) {
+	t.Helper()
 	inv, err := Parse(words)
 	if err != nil {
 		if _, ok := errors.AsType[*UsageError](err); !ok {
-			panic("Parse returned a non-UsageError: " + err.Error())
+			t.Fatalf("%q: Parse returned a non-UsageError: %v", words, err)
 		}
 	}
 	return inv, err
@@ -20,7 +23,7 @@ func parseWords(words ...string) (Invocation, error) {
 
 func mustRun(t *testing.T, words ...string) *Options {
 	t.Helper()
-	inv, err := parseWords(words...)
+	inv, err := parse(t, words...)
 	if err != nil {
 		t.Fatalf("%q: unexpected error: %v", words, err)
 	}
@@ -32,16 +35,23 @@ func mustRun(t *testing.T, words ...string) *Options {
 
 func expectErr(t *testing.T, words ...string) error {
 	t.Helper()
-	_, err := parseWords(words...)
+	_, err := parse(t, words...)
 	if err == nil {
 		t.Fatalf("%q: expected an error", words)
 	}
 	return err
 }
 
+func expectErrMessage(t *testing.T, want string, words ...string) {
+	t.Helper()
+	if err := expectErr(t, words...); err.Error() != want {
+		t.Fatalf("%q: got %q, want %q", words, err, want)
+	}
+}
+
 func expectHelp(t *testing.T, topic HelpTopic, words ...string) {
 	t.Helper()
-	inv, err := parseWords(words...)
+	inv, err := parse(t, words...)
 	if err != nil || inv.Kind != KindHelp || inv.Topic != topic {
 		t.Fatalf("%q: expected help topic %d, got %+v, %v", words, topic, inv, err)
 	}
@@ -49,7 +59,7 @@ func expectHelp(t *testing.T, topic HelpTopic, words ...string) {
 
 func expectVersion(t *testing.T, words ...string) {
 	t.Helper()
-	inv, err := parseWords(words...)
+	inv, err := parse(t, words...)
 	if err != nil || inv.Kind != KindVersion {
 		t.Fatalf("%q: expected version, got %+v, %v", words, inv, err)
 	}
@@ -94,14 +104,9 @@ func TestDeleteRequiresIDAndRejectsUnrelatedOptions(t *testing.T) {
 }
 
 func TestDeleteErrorMessages(t *testing.T) {
-	if err := expectErr(t, "delete"); err.Error() != "delete requires --appid <application object id or client id>." {
-		t.Fatalf("got %q", err)
-	}
-	err := expectErr(t, "delete", "--appid", "id", "--name", "x", "--json", "--scope-state", "", "--secret-end", "")
-	want := "--name, --scope-state, --secret-end, --json can't be used with the delete command."
-	if err.Error() != want {
-		t.Fatalf("got %q, want %q", err, want)
-	}
+	expectErrMessage(t, "delete requires --appid <application object id or client id>.", "delete")
+	expectErrMessage(t, "--name, --scope-state, --secret-end, --json can't be used with the delete command.",
+		"delete", "--appid", "id", "--name", "x", "--json", "--scope-state", "", "--secret-end", "")
 }
 
 func TestRepeatedScalarsOverrideButRedirectsAppendAndFlagsStaySet(t *testing.T) {
@@ -140,6 +145,7 @@ func TestCobraDoesNotBroadenSyntax(t *testing.T) {
 		{"list", "help"},
 		{"create", "extra"},
 		{"create", "help"},
+		{"create", "list"},
 		{"list", "---name", "x"},
 		{"list", "--json=true"},
 		{"--create-secret=false"},
@@ -149,19 +155,14 @@ func TestCobraDoesNotBroadenSyntax(t *testing.T) {
 	} {
 		expectErr(t, args...)
 	}
-	if err := expectErr(t, "--name=x"); err.Error() != "Unknown or incomplete argument: --name=x. Run with --help for usage." {
-		t.Fatalf("got %q", err)
+	expectErrMessage(t, "Unknown or incomplete argument: --name=x. Run with --help for usage.", "--name=x")
+	expectErrMessage(t, "Unknown or incomplete argument: extra. Run with --help for usage.", "create", "extra")
+	for _, args := range [][]string{{"--name", "--oops"}, {"--redirect-url", "--oops"}} {
+		if err := expectErr(t, args...); !strings.Contains(err.Error(), "Expected a value, not a following long option.") {
+			t.Fatalf("%q: got %q", args, err)
+		}
 	}
-	if err := expectErr(t, "create", "extra"); err.Error() != "Unknown or incomplete argument: extra. Run with --help for usage." {
-		t.Fatalf("got %q", err)
-	}
-	if err := expectErr(t, "--name", "--oops"); !strings.Contains(err.Error(), "Expected a value, not a following long option.") {
-		t.Fatalf("got %q", err)
-	}
-	inv, err := parseWords("--name=x", "--help")
-	if err != nil || inv.Kind != KindHelp {
-		t.Fatalf("got %+v, %v", inv, err)
-	}
+	expectHelp(t, TopicGeneral, "--name=x", "--help")
 	expectVersion(t, "--", "--version")
 }
 
@@ -188,15 +189,36 @@ func TestEarlyExitPrecedenceIgnoresInvalidOptionsAndValues(t *testing.T) {
 	expectErr(t, "unknown", "--version", "--help")
 	expectErr(t, "help", "unknown", "--version")
 	expectHelp(t, TopicCreate, "help", "CREATE", "--version")
-	inv, err := parseWords()
+	inv, err := parse(t)
 	if err != nil || inv.Kind != KindNoArguments {
 		t.Fatalf("got %+v, %v", inv, err)
 	}
-	if err := expectErr(t, "unknown"); err.Error() != "Unknown command: unknown. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help)." {
-		t.Fatalf("got %q", err)
-	}
-	if err := expectErr(t, "help", "Nope"); err.Error() != "No help for 'nope'. Try: help, help create, help expose-api, help list, help delete." {
-		t.Fatalf("got %q", err)
+	expectErrMessage(t, "Unknown command: unknown. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help).", "unknown")
+	expectErrMessage(t, "No help for 'nope'. Try: help, help create, help expose-api, help list, help delete.", "help", "Nope")
+}
+
+func TestHelpTopicSelection(t *testing.T) {
+	for _, c := range []struct {
+		words []string
+		want  HelpTopic
+	}{
+		{[]string{"help"}, TopicGeneral},
+		{[]string{"HELP", "General"}, TopicGeneral},
+		{[]string{"help", "create"}, TopicCreate},
+		{[]string{"help", "Expose-API"}, TopicExposeAPI},
+		{[]string{"help", "list"}, TopicList},
+		{[]string{"help", "delete"}, TopicDelete},
+		{[]string{"help", "list", "extra"}, TopicList},
+		{[]string{"--help"}, TopicGeneral},
+		{[]string{"--name", "x", "-h"}, TopicGeneral},
+		{[]string{"create", "-h"}, TopicCreate},
+		{[]string{"expose-api", "--help"}, TopicExposeAPI},
+		{[]string{"list", "--help"}, TopicList},
+		{[]string{"delete", "-h"}, TopicDelete},
+	} {
+		t.Run(strings.Join(c.words, " "), func(t *testing.T) {
+			expectHelp(t, c.want, c.words...)
+		})
 	}
 }
 
@@ -234,16 +256,12 @@ func TestCreationSemanticsRemainDeferredButBlankIDsDoNot(t *testing.T) {
 		t.Fatalf("appid = %v", got)
 	}
 	mustRun(t, "--name", "", "--audience", "invalid", "--scope-state", "invalid", "--secret-expiry", "invalid")
-	if err := expectErr(t, "--appid", " \t"); err.Error() != "--appid cannot be blank; omit it when creating a new application." {
-		t.Fatalf("got %q", err)
-	}
+	expectErrMessage(t, "--appid cannot be blank; omit it when creating a new application.", "--appid", " \t")
 	expectErr(t, "expose-api", "--appid", "no-id", "--scope-name", "read")
 	if got := mustRun(t, "expose-api", "--appid", "NO-ID", "--scope-name", "read").Command; got != CommandExposeAPI {
 		t.Fatalf("command = %v", got)
 	}
-	if err := expectErr(t, "expose-api", "--appid", "id", "--scope-name", " "); err.Error() != "expose-api requires --scope-name." {
-		t.Fatalf("got %q", err)
-	}
+	expectErrMessage(t, "expose-api requires --scope-name.", "expose-api", "--appid", "id", "--scope-name", " ")
 }
 
 func TestListTopObeysSignedIntegerBoundaries(t *testing.T) {
@@ -264,12 +282,8 @@ func TestListTopObeysSignedIntegerBoundaries(t *testing.T) {
 	for _, raw := range []string{"", "0", "-1", "2147483648", "1.0", "1_000", "allx"} {
 		expectErr(t, "list", "--top", raw)
 	}
-	if err := expectErr(t, "list", "--top", "0"); err.Error() != "--top must be a positive whole number or 'all', got: 0" {
-		t.Fatalf("got %q", err)
-	}
-	if err := expectErr(t, "list", "--name", " "); err.Error() != "--name cannot be blank." {
-		t.Fatalf("got %q", err)
-	}
+	expectErrMessage(t, "--top must be a positive whole number or 'all', got: 0", "list", "--top", "0")
+	expectErrMessage(t, "--name cannot be blank.", "list", "--name", " ")
 }
 
 func TestForbiddenOptionGroupsRejectEvenEmptyValues(t *testing.T) {
@@ -290,14 +304,76 @@ func TestForbiddenOptionGroupsRejectEvenEmptyValues(t *testing.T) {
 	for _, option := range []string{"--json", "--create-secret"} {
 		expectErr(t, "expose-api", "--appid", "id", "--scope-name", "read", option)
 	}
-	if err := expectErr(t, "create", "--json"); err.Error() != "--json can only be used with the list command." {
-		t.Fatalf("got %q", err)
-	}
-	if err := expectErr(t, "create", "--top", "", "--json"); err.Error() != "--top, --json can only be used with the list command." {
-		t.Fatalf("got %q", err)
-	}
-	if err := expectErr(t, "list", "--appid", "x", "--redirect-url", "a"); err.Error() != "--appid, --redirect-urls can't be used with the list command." {
-		t.Fatalf("got %q", err)
+	expectErrMessage(t, "--json can only be used with the list command.", "create", "--json")
+	expectErrMessage(t, "--top, --json can only be used with the list command.", "create", "--top", "", "--json")
+	expectErrMessage(t, "--appid, --redirect-urls can't be used with the list command.", "list", "--appid", "x", "--redirect-url", "a")
+}
+
+// TestValidationOrderAndMessages pins which rule wins when several fail and
+// that grouped messages list options in a fixed order, not argument order.
+func TestValidationOrderAndMessages(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		words []string
+		want  string
+	}{
+		{
+			"delete lists every forbidden group in order",
+			[]string{"delete", "--appid", "id", "--json", "--top", "1", "--secret-end", "x", "--create-secret",
+				"--scope-state", "x", "--scope-name", "x", "--audience", "x", "--redirect-url", "x", "--name", "x"},
+			"--name, --redirect-urls, --audience, --scope-name, --scope-state, --create-secret, --secret-end, --top, --json can't be used with the delete command.",
+		},
+		{
+			"expose-api lists every forbidden group in order",
+			[]string{"expose-api", "--appid", "id", "--scope-name", "r", "--json", "--top", "1", "--secret-start", "s",
+				"--create-secret", "--audience", "a", "--redirect-url", "r", "--name", "n"},
+			"--name, --redirect-urls, --audience, --create-secret, --secret-start, --top, --json can't be used with the expose-api command.",
+		},
+		{
+			"list lists every forbidden group in order",
+			[]string{"list", "--secret-expiry", "1", "--scope-consent", "x", "--scope-name", "x", "--audience", "x",
+				"--redirect-url", "x", "--appid", "x", "--name", "n", "--top", "1", "--json"},
+			"--appid, --redirect-urls, --audience, --scope-name, --scope-consent, --secret-expiry can't be used with the list command.",
+		},
+		{
+			"blank appid beats command rules",
+			[]string{"delete", "--appid", " ", "--name", "x"},
+			"--appid cannot be blank; omit it when creating a new application.",
+		},
+		{
+			"delete missing appid beats forbidden options",
+			[]string{"delete", "--name", "x"},
+			"delete requires --appid <application object id or client id>.",
+		},
+		{
+			"expose-api missing appid beats missing scope name",
+			[]string{"expose-api", "--appid", "no-id", "--json"},
+			"expose-api requires --appid <application object id or client id>.",
+		},
+		{
+			"expose-api missing scope name beats forbidden options",
+			[]string{"expose-api", "--appid", "id", "--json"},
+			"expose-api requires --scope-name.",
+		},
+		{
+			"list forbidden options beat blank name",
+			[]string{"list", "--name", " ", "--appid", "x"},
+			"--appid can't be used with the list command.",
+		},
+		{
+			"list blank name beats invalid top",
+			[]string{"list", "--name", " ", "--top", "0"},
+			"--name cannot be blank.",
+		},
+		{
+			"create lists list-only options in fixed order",
+			[]string{"--create-secret", "--json", "--top", "x", "--name", "n"},
+			"--top, --json can only be used with the list command.",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectErrMessage(t, c.want, c.words...)
+		})
 	}
 }
 

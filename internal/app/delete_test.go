@@ -65,26 +65,29 @@ func TestDeleteConfirmsResolvedTargetAndUsesObjectIDAfterFallback(t *testing.T) 
 }
 
 func TestDeleteStopsBeforeConfirmationOnMissingOrInvalidLookup(t *testing.T) {
-	for i, tc := range []struct {
+	for _, tc := range []struct {
+		name      string
 		responses []graphtest.Response
 		requests  int
 	}{
-		{[]graphtest.Response{raw(404, "missing"), raw(404, "missing")}, 2},
-		{[]graphtest.Response{raw(403, "denied")}, 1},
-		{[]graphtest.Response{ok(obj{"id": "object"})}, 1},
-		{[]graphtest.Response{ok(obj{"id": "object", "appId": "client", "displayName": 42})}, 1},
+		{"not found", []graphtest.Response{raw(404, "missing"), raw(404, "missing")}, 2},
+		{"forbidden", []graphtest.Response{raw(403, "denied")}, 1},
+		{"missing appId", []graphtest.Response{ok(obj{"id": "object"})}, 1},
+		{"non-string name", []graphtest.Response{ok(obj{"id": "object", "appId": "client", "displayName": 42})}, 1},
 	} {
-		f := graphtest.New(t, tc.responses...)
-		tio := newTestIO(t, "yes\n")
-		if err := deleteApp(context.Background(), options(t, "delete", "--appid", "client"), f.Client(t), tio.env); err == nil {
-			t.Errorf("case %d: no error", i)
-		}
-		if n := len(f.Requests()); n != tc.requests {
-			t.Errorf("case %d: %d requests, want %d", i, n, tc.requests)
-		}
-		if tio.stderr.Len() != 0 || tio.stdout.Len() != 0 {
-			t.Errorf("case %d: output %q %q", i, tio.stdout.String(), tio.stderr.String())
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			f := graphtest.New(t, tc.responses...)
+			tio := newTestIO(t, "yes\n")
+			if err := deleteApp(context.Background(), options(t, "delete", "--appid", "client"), f.Client(t), tio.env); err == nil {
+				t.Error("no error")
+			}
+			if n := len(f.Requests()); n != tc.requests {
+				t.Errorf("%d requests, want %d", n, tc.requests)
+			}
+			if tio.stderr.Len() != 0 || tio.stdout.Len() != 0 {
+				t.Errorf("output %q %q", tio.stdout.String(), tio.stderr.String())
+			}
+		})
 	}
 }
 
@@ -132,5 +135,31 @@ func TestDeleteDoesNotMutateWhenConfirmationIOFails(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("unexpected %s", r.Method)
 		}
+	}
+}
+
+func TestDeletePromptIsExact(t *testing.T) {
+	const prompt = "Delete this app registration?\n  Name: \"(unnamed)\"\n  Object ID: \"object\"\n  Application (client) ID: \"client\"\n" +
+		"Deletion can interrupt applications using this registration.\nType 'yes' to delete; any other answer cancels: "
+	for _, tc := range []struct {
+		answer    string
+		responses []graphtest.Response
+		want      string
+	}{
+		{"no\n", []graphtest.Response{ok(obj{"id": "object", "appId": "client"})},
+			prompt + "Deletion cancelled. Nothing was deleted.\n"},
+		{"yes\n", []graphtest.Response{ok(obj{"id": "object", "appId": "client"}), raw(204, "")},
+			prompt + "Deleted application \"object\" (Application (client) ID: \"client\").\n"},
+	} {
+		t.Run(strings.TrimSpace(tc.answer), func(t *testing.T) {
+			f := graphtest.New(t, tc.responses...)
+			tio := newTestIO(t, tc.answer)
+			if err := deleteApp(context.Background(), options(t, "delete", "--appid", "object"), f.Client(t), tio.env); err != nil {
+				t.Fatal(err)
+			}
+			if got := tio.stderr.String(); got != tc.want {
+				t.Errorf("stderr:\n got %q\nwant %q", got, tc.want)
+			}
+		})
 	}
 }

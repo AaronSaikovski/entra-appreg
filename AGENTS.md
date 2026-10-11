@@ -23,17 +23,17 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 
 - **`internal/cli`: three-phase parse.** Cobra must never broaden syntax or print output.
   1. **Pre-parse.** The command word is lowercased. An unknown command fails first. `--version` beats `--help` anywhere, including in a value position. `--` and `--x=y` are rejected.
-  2. **Cobra** (`flags.go`). A fresh, silent tree is built per call, and all 17 flags are `PersistentFlags`.
+  2. **Cobra** (`flags.go`). A fresh, silent tree with only the requested subcommand is built per call, and all 17 flags are `PersistentFlags`.
      - `optionalString` rejects values starting with `--`.
      - `redirectList` accumulates values; `--redirect-url` is normalized to `--redirect-urls`.
      - A hidden `--help` with no `-h` replaces Cobra's own. A `ran` guard catches cases where no subcommand ran.
-  3. **`validate()`.** Option-group rules run in a fixed order.
+  3. **`validate()`** is a switch on the command. Forbidden-option messages come from one ordered table of all options, each tagged with group bits; adding an option means adding one row there.
   - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
 - **`internal/auth`: tenant check, then token.**
   - Runs `az account show --query tenantId --output tsv --only-show-errors` (`cmd.exe /d /c az` on Windows). The output must be a UUID.
   - Gets an `AzureCLICredential` token, all under a 10 s deadline. Only `create` pins `TenantID`.
   - Returns a `staticCredential` whose `String`/`GoString` are redacted, so Graph calls never start `az` again.
-  - Error messages are fixed constants. Never wrap SDK errors; they carry `az` stderr.
+  - Error messages are fixed constants. Never wrap SDK errors; they carry `az` stderr. `runAz` sets `cmd.Stderr = io.Discard`; `nil` would keep a copy of stderr inside `*exec.ExitError`.
 - **`internal/graph`: `msgraph-sdk-go` on a hardened transport.**
   - Kiota transport with only `ParametersNameDecodingHandler` and `statusHandler`: no retry, redirect or compression. `http.Client` has a 10 s timeout and returns `ErrUseLastResponse` instead of following redirects.
   - `statusHandler` turns every non-2xx response into `*StatusError` carrying the raw body. The 403 guidance and the `Application.Read.All` hint (GET `/applications` only) live in `status.go`.
@@ -48,7 +48,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 - **`internal/app`: the workflows.**
   - `create` sequence:
     1. Optional lookup.
-    2. Validate name → audience → redirects → exact-string dedup → scope → lifetime.
+    2. Validate (`planCreate`): name → audience → redirects → exact-string dedup → scope → lifetime. The result is a `createPlan`; later steps (`checkNameAvailable`, `postApplication`, `addScope`, `addSecret`, `reportContents`, `writeReport`) take it in this order.
     3. Duplicate-name preflight: a match is a usage error.
     4. POST.
     5. Print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately.
@@ -150,6 +150,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
   - `ok`, `raw` and `decode`.
 - **Auth tests.** Fake `runFunc`/`credentialFunc`. Assert that strings like `private-cli-output-must-not-leak` never appear in errors.
 - **Main tests.** Call `run` directly, with stdin from an `os.Pipe` (not a TTY), stderr as a temp file, and `t.Setenv("PATH", t.TempDir())`.
+- **Exact-output tests.** `TestCreateOutputAndReportAreExact`, `TestListOutputIsExact` and `TestValidationOrderAndMessages` check stdout, report text and validation order byte-for-byte. Update them only when you mean to change behavior.
 - **Platform-specific tests.** `report_unix_test.go` (build tag `unix`) and `report_windows_test.go` (`windows`). The Windows test is compiled locally via `GOOS=windows go vet` but only runs on Windows CI. The report-failure case skips on Windows or when running as root.
 - **Hermeticity.** Keep tests offline. Use only `t.Setenv`/`t.TempDir`; never touch the real Azure session, global cwd or credentials.
 - **Live QA.** Use README's **Smoke test checklist** only in a deliberately chosen test tenant, starting with read-only `list --top 1 --json`. Create, expose and delete mutate the tenant. Keep reports and captured secret output out of git and logs.

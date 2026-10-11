@@ -54,17 +54,37 @@ func (r redirectList) Set(v string) error {
 
 func (redirectList) Type() string { return "stringArray" }
 
+// rejectPositional is every subcommand's Args check: this CLI takes no
+// positional arguments after the command word.
 func rejectPositional(_ *cobra.Command, args []string) error {
 	if len(args) > 0 {
-		return &UsageError{Message: "Unknown or incomplete argument: " + args[0] + ". Run with --help for usage."}
+		return unknownArgument(args[0])
 	}
 	return nil
 }
 
+func unknownArgument(arg string) *UsageError {
+	return Usagef("Unknown or incomplete argument: %s. Run with --help for usage.", arg)
+}
+
+// asUsageError returns err itself when it is a *UsageError, and otherwise
+// wraps its text in the standard usage hint.
+func asUsageError(err error) *UsageError {
+	if usage, ok := errors.AsType[*UsageError](err); ok {
+		return usage
+	}
+	return &UsageError{Message: strings.TrimSuffix(err.Error(), ".") + ". Run with --help for usage."}
+}
+
 // parseFlags parses args (without the command word) for the canonical
-// command name with a fresh, silent Cobra tree.
+// command name with a fresh, silent Cobra tree. The tree holds only that one
+// subcommand: the flags are persistent on the root so every command parses
+// every option, and validate decides which ones the command accepts.
 func parseFlags(commandName string, args []string) (*Options, error) {
 	opts := &Options{}
+	// Cobra's Execute returns nil without running the subcommand when it
+	// handles a help flag itself. Parse intercepts --help first, so ran is a
+	// defensive check that opts really comes from a completed parse.
 	ran := false
 	root := &cobra.Command{
 		Use:               "entra-appreg",
@@ -75,16 +95,14 @@ func parseFlags(commandName string, args []string) (*Options, error) {
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
 	root.SetHelpCommand(&cobra.Command{Hidden: true})
-	for _, name := range []string{"create", "expose-api", "list", "delete"} {
-		root.AddCommand(&cobra.Command{
-			Use:  name,
-			Args: rejectPositional,
-			RunE: func(*cobra.Command, []string) error {
-				ran = true
-				return nil
-			},
-		})
-	}
+	root.AddCommand(&cobra.Command{
+		Use:  commandName,
+		Args: rejectPositional,
+		RunE: func(*cobra.Command, []string) error {
+			ran = true
+			return nil
+		},
+	})
 
 	flags := root.PersistentFlags()
 	for _, f := range []struct {

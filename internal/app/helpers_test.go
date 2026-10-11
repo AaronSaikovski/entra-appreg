@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -61,6 +62,22 @@ func decode(t *testing.T, r graphtest.Request) map[string]any {
 		t.Fatalf("%s %s body %q: %v", r.Method, r.Path, r.Body, err)
 	}
 	return body
+}
+
+// isUsage reports whether err is a usage error (exit code 2).
+func isUsage(err error) bool {
+	_, ok := errors.AsType[*cli.UsageError](err)
+	return ok
+}
+
+// assertNoMethod fails the test if any recorded request used method.
+func assertNoMethod(t *testing.T, requests []graphtest.Request, method string) {
+	t.Helper()
+	for _, r := range requests {
+		if r.Method == method {
+			t.Errorf("unexpected %s %s", r.Method, r.Path)
+		}
+	}
 }
 
 type obj = map[string]any

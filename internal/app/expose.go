@@ -13,6 +13,9 @@ import (
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
 )
 
+// exposeAPI adds one scope to an existing registration. The PATCH body is
+// rebuilt from fresh models (see copyAPI) and sets identifierUris only when
+// the registration has none.
 func exposeAPI(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	out := env.Stdout
 	reference := *o.AppID // cli.Parse requires --appid for expose-api
@@ -31,23 +34,10 @@ func exposeAPI(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 		return err
 	}
 	fetched := app.GetApi()
-	if fetched != nil {
-		for _, scope := range fetched.GetOauth2PermissionScopes() {
-			if scope == nil {
-				continue
-			}
-			if cli.EqualFoldASCII(deref(scope.GetValue(), ""), spec.name) {
-				return fmt.Errorf("'%s' already has a scope named '%s'. Nothing was changed.", name, spec.name)
-			}
-		}
+	if hasScope(fetched, spec.name) {
+		return fmt.Errorf("'%s' already has a scope named '%s'. Nothing was changed.", name, spec.name)
 	}
-	existingURI := ""
-	for _, uri := range app.GetIdentifierUris() {
-		if uri != "" {
-			existingURI = uri
-			break
-		}
-	}
+	existingURI := firstIdentifierURI(app.GetIdentifierUris())
 	identifier := existingURI
 	if identifier == "" {
 		identifier = "api://" + clientID
@@ -76,10 +66,34 @@ func exposeAPI(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 	return nil
 }
 
+// hasScope reports whether api already defines a scope whose value equals
+// name under ASCII case folding.
+func hasScope(api models.ApiApplicationable, name string) bool {
+	if api == nil {
+		return false
+	}
+	for _, scope := range api.GetOauth2PermissionScopes() {
+		if scope != nil && cli.EqualFoldASCII(deref(scope.GetValue(), ""), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstIdentifierURI returns the first non-empty identifier URI, or "".
+func firstIdentifierURI(uris []string) string {
+	for _, uri := range uris {
+		if uri != "" {
+			return uri
+		}
+	}
+	return ""
+}
+
 // copyAPI copies a fetched api object into fresh models. The backing store
 // serializes only fields changed after a fetch, so fetched models cannot be
 // sent back. Each setter runs only when the fetched value is present, so absent
-// fields are not sent as null.
+// fields are not sent as null. Nil list entries are dropped.
 func copyAPI(fetched models.ApiApplicationable) models.ApiApplicationable {
 	api := models.NewApiApplication()
 	if fetched == nil {
@@ -103,37 +117,40 @@ func copyAPI(fetched models.ApiApplicationable) models.ApiApplicationable {
 	if pre := fetched.GetPreAuthorizedApplications(); pre != nil {
 		copied := make([]models.PreAuthorizedApplicationable, 0, len(pre))
 		for _, p := range pre {
-			if p == nil {
-				continue
+			if p != nil {
+				copied = append(copied, copyPreAuthorized(p))
 			}
-			c := models.NewPreAuthorizedApplication()
-			if v := p.GetAppId(); v != nil {
-				c.SetAppId(v)
-			}
-			if v := p.GetDelegatedPermissionIds(); v != nil {
-				c.SetDelegatedPermissionIds(v)
-			}
-			if v := p.GetOdataType(); v != nil {
-				c.SetOdataType(v)
-			}
-			if v := p.GetAdditionalData(); v != nil {
-				c.SetAdditionalData(maps.Clone(v))
-			}
-			copied = append(copied, c)
 		}
 		api.SetPreAuthorizedApplications(copied)
 	}
 	if scopes := fetched.GetOauth2PermissionScopes(); scopes != nil {
+		// One spare slot for the scope exposeAPI appends.
 		copied := make([]models.PermissionScopeable, 0, len(scopes)+1)
 		for _, s := range scopes {
-			if s == nil {
-				continue
+			if s != nil {
+				copied = append(copied, copyScope(s))
 			}
-			copied = append(copied, copyScope(s))
 		}
 		api.SetOauth2PermissionScopes(copied)
 	}
 	return api
+}
+
+func copyPreAuthorized(p models.PreAuthorizedApplicationable) models.PreAuthorizedApplicationable {
+	c := models.NewPreAuthorizedApplication()
+	if v := p.GetAppId(); v != nil {
+		c.SetAppId(v)
+	}
+	if v := p.GetDelegatedPermissionIds(); v != nil {
+		c.SetDelegatedPermissionIds(v)
+	}
+	if v := p.GetOdataType(); v != nil {
+		c.SetOdataType(v)
+	}
+	if v := p.GetAdditionalData(); v != nil {
+		c.SetAdditionalData(maps.Clone(v))
+	}
+	return c
 }
 
 func copyScope(s models.PermissionScopeable) models.PermissionScopeable {

@@ -152,7 +152,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "keyId") {
 					t.Fatalf("err = %v", err)
 				}
-				if _, ok := errors.AsType[*cli.UsageError](err); ok {
+				if isUsage(err) {
 					t.Error("missing keyId must be a runtime error")
 				}
 				report := readReport(t, reportPath)
@@ -229,62 +229,78 @@ func TestCreateWithoutRedirectsSendsEmptyRedirectList(t *testing.T) {
 }
 
 func TestCreateBlocksDuplicateNamesAndFailedChecks(t *testing.T) {
-	for i, reply := range []graphtest.Response{
-		ok(obj{"value": arr{obj{"id": "existing"}}}),
-		ok(obj{}),
-		raw(403, "lookup-denied"),
+	for _, tc := range []struct {
+		name      string
+		reply     graphtest.Response
+		wantUsage bool
+	}{
+		{"duplicate", ok(obj{"value": arr{obj{"id": "existing"}}}), true},
+		{"missing value", ok(obj{}), false},
+		{"forbidden", raw(403, "lookup-denied"), false},
 	} {
-		f := graphtest.New(t, reply)
-		err := create(context.Background(), options(t, "--name", "O'Brien & Co"), f.Client(t), "tenant", newTestIO(t, "").env)
-		if err == nil {
-			t.Fatalf("case %d: created", i)
-		}
-		var usage *cli.UsageError
-		if isUsage := errors.As(err, &usage); isUsage != (i == 0) {
-			t.Errorf("case %d: usage error = %v (%v)", i, isUsage, err)
-		}
-		requests := f.Requests()
-		if len(requests) != 1 || requests[0].Method != "GET" {
-			t.Fatalf("case %d: requests = %+v", i, requests)
-		}
-		query, err := url.ParseQuery(requests[0].RawQuery)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := query.Get("$filter"); got != "displayName eq 'O''Brien & Co'" {
-			t.Errorf("case %d: $filter = %q", i, got)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			f := graphtest.New(t, tc.reply)
+			err := create(context.Background(), options(t, "--name", "O'Brien & Co"), f.Client(t), "tenant", newTestIO(t, "").env)
+			if err == nil {
+				t.Fatal("created")
+			}
+			if got := isUsage(err); got != tc.wantUsage {
+				t.Errorf("usage error = %v, want %v (%v)", got, tc.wantUsage, err)
+			}
+			requests := f.Requests()
+			if len(requests) != 1 || requests[0].Method != "GET" {
+				t.Fatalf("requests = %+v", requests)
+			}
+			query, err := url.ParseQuery(requests[0].RawQuery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := query.Get("$filter"); got != "displayName eq 'O''Brien & Co'" {
+				t.Errorf("$filter = %q", got)
+			}
+		})
 	}
 }
 
 func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
-	f := graphtest.New(t,
-		ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
-		ok(obj{"value": arr{obj{"id": "existing"}}}))
-	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
-	if _, ok := errors.AsType[*cli.UsageError](err); !ok {
-		t.Fatalf("err = %v, want a usage error", err)
-	}
-	requests := f.Requests()
-	if len(requests) != 2 {
-		t.Fatalf("%d requests, want 2", len(requests))
-	}
-	for _, r := range requests {
-		if r.Method == "POST" {
-			t.Error("created despite a match on page 2")
+	t.Run("match on page 2", func(t *testing.T) {
+		f := graphtest.New(t,
+			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
+			ok(obj{"value": arr{obj{"id": "existing"}}}))
+		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+		if !isUsage(err) {
+			t.Fatalf("err = %v, want a usage error", err)
 		}
-	}
+		requests := f.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("%d requests, want 2", len(requests))
+		}
+		assertNoMethod(t, requests, "POST")
+	})
+	t.Run("page cycle", func(t *testing.T) {
+		f := graphtest.New(t,
+			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
+			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}))
+		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+		if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
+			t.Fatalf("err = %v", err)
+		}
+		assertNoMethod(t, f.Requests(), "POST")
+	})
+}
 
-	f = graphtest.New(t,
-		ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
-		ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}))
-	err = create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
-	if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
-		t.Fatalf("err = %v", err)
-	}
-	for _, r := range f.Requests() {
-		if r.Method == "POST" {
-			t.Error("created despite a page cycle")
+func TestAudienceMatchesCaseInsensitivelyAndReturnsCanonicalSpelling(t *testing.T) {
+	for _, tc := range []struct {
+		value *string
+		want  string
+	}{
+		{nil, "AzureADMyOrg"},
+		{new(" azureadmultipleorgs "), "AzureADMultipleOrgs"},
+		{new("PERSONALMICROSOFTACCOUNT"), "PersonalMicrosoftAccount"},
+	} {
+		got, err := resolveAudience(tc.value)
+		if err != nil || got != tc.want {
+			t.Errorf("resolveAudience(%q) = %q, %v; want %q", deref(tc.value, "<nil>"), got, err, tc.want)
 		}
 	}
 }
@@ -313,5 +329,165 @@ func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 	requests := f.Requests()
 	if len(requests) != 4 || requests[3].Method != "POST" || requests[3].Path != "/v1.0/applications" {
 		t.Fatalf("requests = %+v", requests)
+	}
+}
+
+// TestCreateOutputAndReportAreExact pins every printed line and the report
+// layout, so restructuring create cannot reorder or reword them.
+func TestCreateOutputAndReportAreExact(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		responses  []graphtest.Response
+		wantStdout string // {report} is replaced with the report path
+		wantReport string // {scope} is replaced with the generated scope ID
+	}{
+		{
+			name: "everything",
+			args: workflowArgs,
+			responses: []graphtest.Response{
+				ok(obj{"value": arr{}}),
+				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				raw(204, ""),
+				ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}),
+			},
+			wantStdout: "Creating application registration 'App'\n" +
+				"  Supported account types: PersonalMicrosoftAccount\n" +
+				"  Redirect URI (SPA): https://example.com/Callback\n" +
+				"  Redirect URI (SPA): https://example.com/callback\n" +
+				"AUTH_APP_ID=object\n" +
+				"AUTH_CLIENT_ID=client\n" +
+				"Exposing API: adding scope 'api://client/read' (Admins and users, Enabled)\n" +
+				"Adding client secret 'App secret' to object\n" +
+				"Wrote details to {report}\n" +
+				"This file contains the client secret in plain text. Keep it out of source control.\n",
+			wantReport: "Application name:        App\n" +
+				"Application (client) ID: client\n" +
+				"Object ID:               object\n" +
+				"Directory (tenant) ID:   tenant\n" +
+				"Supported account types: PersonalMicrosoftAccount\n" +
+				"Application ID URI:      api://client\n" +
+				"Scope (full name):       api://client/read\n" +
+				"Scope ID:                {scope}\n" +
+				"Scope display name:      Access App\n" +
+				"Scope description:       Allow the application to access App on behalf of the signed-in user.\n" +
+				"Scope consent:           Admins and users\n" +
+				"Scope state:             Enabled\n" +
+				"Scope user display name: Access App\n" +
+				"Scope user description:  Allow the application to access App on your behalf.\n" +
+				"Secret description:      App secret\n" +
+				"Secret ID:               " + keyID + "\n" +
+				"Secret value:            fake-one-time-secret\n" +
+				"Secret starts:           now\n" +
+				"Secret expires:          2028-05-28T16:30:45Z\n" +
+				"Redirect URIs (SPA):     https://example.com/Callback\n" +
+				"                         https://example.com/callback\n",
+		},
+		{
+			name: "minimal",
+			args: []string{"--name", "App"},
+			responses: []graphtest.Response{
+				ok(obj{"value": arr{}}),
+				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+			},
+			wantStdout: "Creating application registration 'App'\n" +
+				"  Supported account types: AzureADMyOrg\n" +
+				"AUTH_APP_ID=object\n" +
+				"AUTH_CLIENT_ID=client\n" +
+				"Skipping API scope (pass --scope-name to expose an API)\n" +
+				"Skipping client secret (pass --create-secret to create one)\n" +
+				"Wrote details to {report}\n",
+			wantReport: "Application name:        App\n" +
+				"Application (client) ID: client\n" +
+				"Object ID:               object\n" +
+				"Directory (tenant) ID:   tenant\n" +
+				"Supported account types: AzureADMyOrg\n" +
+				"Redirect URIs (SPA):     \n",
+		},
+		{
+			name: "custom secret dates from Graph",
+			args: []string{"--name", "App", "--create-secret", "--secret-start", "1/3/2028", "--secret-end", "2/3/2028"},
+			responses: []graphtest.Response{
+				ok(obj{"value": arr{}}),
+				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
+				ok(obj{
+					"keyId": keyID, "secretText": "fake-one-time-secret",
+					"startDateTime": "2028-03-01T00:00:00Z", "endDateTime": "2028-03-02T23:59:59.5Z",
+				}),
+			},
+			wantStdout: "Creating application registration 'App'\n" +
+				"  Supported account types: AzureADMyOrg\n" +
+				"AUTH_APP_ID=object\n" +
+				"AUTH_CLIENT_ID=client\n" +
+				"Skipping API scope (pass --scope-name to expose an API)\n" +
+				"Adding client secret 'App secret' to object\n" +
+				"Wrote details to {report}\n" +
+				"This file contains the client secret in plain text. Keep it out of source control.\n",
+			wantReport: "Application name:        App\n" +
+				"Application (client) ID: client\n" +
+				"Object ID:               object\n" +
+				"Directory (tenant) ID:   tenant\n" +
+				"Supported account types: AzureADMyOrg\n" +
+				"Secret description:      App secret\n" +
+				"Secret ID:               " + keyID + "\n" +
+				"Secret value:            fake-one-time-secret\n" +
+				"Secret starts:           2028-03-01T00:00:00Z\n" +
+				"Secret expires:          2028-03-02T23:59:59.5Z\n" +
+				"Redirect URIs (SPA):     \n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tio := newTestIO(t, "")
+			f := graphtest.New(t, tc.responses...)
+			if err := create(context.Background(), options(t, tc.args...), f.Client(t), "tenant", tio.env); err != nil {
+				t.Fatal(err)
+			}
+			reportPath := filepath.Join(tio.env.ReportDir, "App.txt")
+			if got, want := tio.stdout.String(), strings.ReplaceAll(tc.wantStdout, "{report}", reportPath); got != want {
+				t.Errorf("stdout:\n got %q\nwant %q", got, want)
+			}
+			if tio.stderr.Len() != 0 {
+				t.Errorf("stderr = %q", tio.stderr.String())
+			}
+			scopeID := ""
+			if requests := f.Requests(); len(requests) > 2 && requests[2].Method == "PATCH" {
+				scopeID, _ = decode(t, requests[2])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
+			}
+			if got, want := readReport(t, reportPath), strings.ReplaceAll(tc.wantReport, "{scope}", scopeID); got != want {
+				t.Errorf("report:\n got %q\nwant %q", got, want)
+			}
+		})
+	}
+}
+
+func TestCreateValidatesInOrderBeforeAnyRequest(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--audience", "bogus"}, "--name is required when creating an application."},
+		{[]string{"--appid", "no-id", "--name", " "}, "--name is required when creating an application."},
+		{[]string{"--name", "App", "--audience", "bogus", "--redirect-urls", "ftp://x"},
+			"--audience must be one of AzureADMyOrg, AzureADMultipleOrgs, AzureADandPersonalMicrosoftAccount, PersonalMicrosoftAccount, got: bogus"},
+		{[]string{"--name", "App", "--redirect-urls", "https://ok,ftp://x", "--scope-state", "on"},
+			"--redirect-urls must contain absolute http(s) URIs, got: ftp://x"},
+		{[]string{"--name", "App", "--scope-state", "disabled", "--scope-consent", "users", "--secret-expiry", "90"},
+			"--scope-consent, --scope-state require --scope-name."},
+		{[]string{"--name", "App", "--scope-name", "read", "--scope-state", "on", "--secret-expiry", "90"},
+			"--scope-state must be 'enabled' or 'disabled', got: on"},
+		{[]string{"--name", "App", "--secret-expiry", "90"},
+			"--secret-expiry, --secret-start and --secret-end require --create-secret."},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			f := graphtest.New(t)
+			err := create(context.Background(), options(t, tc.args...), f.Client(t), "tenant", newTestIO(t, "").env)
+			usage, ok := errors.AsType[*cli.UsageError](err)
+			if !ok || usage.Message != tc.want {
+				t.Errorf("err = %v, want usage error %q", err, tc.want)
+			}
+			if n := len(f.Requests()); n != 0 {
+				t.Errorf("%d requests, want 0", n)
+			}
+		})
 	}
 }

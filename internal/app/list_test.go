@@ -72,26 +72,26 @@ func TestListCountsNextLinkTruncationAndAcceptsNullNames(t *testing.T) {
 
 func TestListRejectsSelfLinksAndTwoPageCycles(t *testing.T) {
 	initial := "{base}/applications?%24select=id,appId,displayName&%24top=50"
-	for _, cycle := range []bool{false, true} {
-		var f *graphtest.Fixture
-		if cycle {
-			f = graphtest.New(t,
-				ok(obj{"value": arr{}, "@odata.nextLink": "{base}/next"}),
-				ok(obj{"value": arr{}, "@odata.nextLink": initial}))
-		} else {
-			f = graphtest.New(t, ok(obj{"value": arr{}, "@odata.nextLink": initial}))
-		}
-		_, _, err := collectApplications(context.Background(), options(t, "list"), f.Client(t))
-		if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
-			t.Fatalf("cycle %v: err = %v", cycle, err)
-		}
-		want := 1
-		if cycle {
-			want = 2
-		}
-		if n := len(f.Requests()); n != want {
-			t.Errorf("cycle %v: %d requests, want %d", cycle, n, want)
-		}
+	for _, tc := range []struct {
+		name  string
+		pages []graphtest.Response
+	}{
+		{"self link", []graphtest.Response{ok(obj{"value": arr{}, "@odata.nextLink": initial})}},
+		{"two-page cycle", []graphtest.Response{
+			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/next"}),
+			ok(obj{"value": arr{}, "@odata.nextLink": initial}),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := graphtest.New(t, tc.pages...)
+			_, _, err := collectApplications(context.Background(), options(t, "list"), f.Client(t))
+			if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
+				t.Fatalf("err = %v", err)
+			}
+			if n, want := len(f.Requests()), len(tc.pages); n != want {
+				t.Errorf("%d requests, want %d", n, want)
+			}
+		})
 	}
 }
 
@@ -178,5 +178,62 @@ func TestListJSONKeepsStdoutMachineReadable(t *testing.T) {
 	}
 	if got := tio.stderr.String(); got != "Tenant: \"Contoso <&>\"\nTenant ID: tenant\n" {
 		t.Errorf("stderr = %q", got)
+	}
+}
+
+func TestListOutputIsExact(t *testing.T) {
+	tenant := ok(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
+	page := ok(obj{"value": arr{obj{"displayName": "App", "appId": "client", "id": "object"}}, "@odata.nextLink": "{base}/next"})
+	for _, tc := range []struct {
+		name             string
+		args             []string
+		wantOut, wantErr string
+	}{
+		{
+			name:    "text",
+			args:    []string{"list", "--top", "1"},
+			wantOut: "Tenant: \"Contoso\"\nTenant ID: tenant\n\n1. \"App\"\n   Application (client) ID: client\n   Object ID: object\n\nShowing the first 1 app registrations; more exist. Use --top <n|all> or --name <text> to see others.\n",
+		},
+		{
+			name:    "json",
+			args:    []string{"list", "--top", "1", "--json"},
+			wantOut: "[\n  {\n    \"displayName\": \"App\",\n    \"appId\": \"client\",\n    \"id\": \"object\"\n  }\n]\n",
+			wantErr: "Tenant: \"Contoso\"\nTenant ID: tenant\nShowing the first 1; more exist. Use --top or --name.\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := graphtest.New(t, tenant, page)
+			tio := newTestIO(t, "")
+			if err := list(context.Background(), options(t, tc.args...), f.Client(t), tio.env); err != nil {
+				t.Fatal(err)
+			}
+			if got := tio.stdout.String(); got != tc.wantOut {
+				t.Errorf("stdout:\n got %q\nwant %q", got, tc.wantOut)
+			}
+			if got := tio.stderr.String(); got != tc.wantErr {
+				t.Errorf("stderr:\n got %q\nwant %q", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestWriteListTextEmptyResults(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		filter *string
+		want   string
+	}{
+		{"unfiltered", nil, "No app registrations found.\n"},
+		{"filtered", new(" Con "), "No app registrations found with a name starting with 'Con'.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := writeListText(&buf, nil, false, tc.filter); err != nil {
+				t.Fatal(err)
+			}
+			if got := buf.String(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

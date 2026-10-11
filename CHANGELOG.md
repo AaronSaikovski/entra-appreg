@@ -6,6 +6,19 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- Refactored the Go code toward idiomatic Go, per package, with no change in behavior:
+  - `cli`: a command table, smaller pre-parse helpers, and one ordered option-group table for validation. The Cobra tree holds only the requested subcommand.
+  - `auth`: the deadline is handled in one place, and `runAz` now really discards az stderr. With `nil` a copy was kept inside `*exec.ExitError`, though it was never printed.
+  - `graph`: smaller constructors, early returns, and an `ApplicationPages` loop with a dead branch removed.
+  - `app`: `create` is split into `planCreate` → `checkNameAvailable` → `postApplication` → `addScope` → `addSecret` → `reportContents`/`writeReport`; expose/list/delete helpers were extracted.
+  - `report`: the claim loop was split into helpers.
+  - `cmd`: named exit codes, with one place mapping errors to exits.
+  - Tests: helpers use `t.Helper`, repetitive tests are table-driven, and new exact-output and validation-order tests were written and passed before the refactor.
+  - Verification on macOS:
+    - `task check` and `go test -race` pass; staticcheck is clean.
+    - Coverage moved from cmd 53.8% → 71.8%, app 88.8 → 93.0, auth 84.6 → 93.8, cli 96.0 → 98.8, graph 89.2 → 90.4, report 89.2 → 88.6.
+    - Running 41 invocations against the binary built from `HEAD` and the refactored one gave byte-identical stdout, stderr and exit codes.
+    - 20,001 random argument lists parsed identically by the old and new parser.
 - Rewrote README for the Go CLI at version 0.0.1 (testing). It now covers install (release archives or source), auth, command reference, reports and secrets, limits, permissions and troubleshooting, development, CI/release and the smoke checklist. Per-change verification history moved out of the README; it stays in this changelog.
 - GitHub Actions updated for the Go layout:
   - `release.yml` checks that the tag equals `v` + `Version`, runs the quality gates, and then runs GoReleaser with a new `.goreleaser.yaml`. It no longer deletes existing releases or passes `--force`.

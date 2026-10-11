@@ -72,40 +72,47 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		f.t.Errorf("graphtest: reading request body: %v", err)
 	}
-	f.mu.Lock()
-	f.requests = append(f.requests, Request{
+	reply, ok := f.record(Request{
 		Method:        r.Method,
 		Path:          r.URL.EscapedPath(),
 		RawQuery:      r.URL.RawQuery,
 		Authorization: r.Header.Get("Authorization"),
 		Body:          body,
 	})
-	var reply Response
-	exhausted := len(f.responses) == 0
-	if exhausted {
-		reply = Response{Status: http.StatusInternalServerError, Body: "unexpected request"}
-	} else {
-		reply = f.responses[0]
-		f.responses = f.responses[1:]
-	}
-	f.mu.Unlock()
-	if exhausted {
+	if !ok {
 		f.t.Errorf("graphtest: unexpected request %s %s", r.Method, r.URL.RequestURI())
+		reply = Response{Status: http.StatusInternalServerError, Body: "unexpected request"}
 	}
+	f.write(w, reply)
+}
 
+// record appends req and dequeues the next reply; ok is false once the queue is empty.
+func (f *Fixture) record(req Request) (reply Response, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = append(f.requests, req)
+	if len(f.responses) == 0 {
+		return Response{}, false
+	}
+	reply, f.responses = f.responses[0], f.responses[1:]
+	return reply, true
+}
+
+// write sends reply, expanding "{base}" and defaulting a body's Content-Type to JSON.
+func (f *Fixture) write(w http.ResponseWriter, reply Response) {
 	header := w.Header()
 	for name, value := range reply.Header {
 		header.Set(name, value)
 	}
-	replyBody := strings.ReplaceAll(reply.Body, "{base}", f.Base)
-	if replyBody != "" && header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "application/json")
-	}
-	if replyBody != "" {
-		header.Set("Content-Length", strconv.Itoa(len(replyBody)))
+	body := strings.ReplaceAll(reply.Body, "{base}", f.Base)
+	if body != "" {
+		if header.Get("Content-Type") == "" {
+			header.Set("Content-Type", "application/json")
+		}
+		header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	w.WriteHeader(reply.Status)
-	_, _ = io.WriteString(w, replyBody)
+	_, _ = io.WriteString(w, body)
 }
 
 // Requests returns a copy of the requests recorded so far.
@@ -125,6 +132,7 @@ func (f *Fixture) Client(t testing.TB) *graph.Client {
 	return client
 }
 
+// fakeCredential returns a fixed token so tests never reach a real identity provider.
 type fakeCredential struct{ token string }
 
 func (c fakeCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {

@@ -23,28 +23,28 @@ type StatusError struct {
 
 // Error renders the status line and raw body; HTTP 403 adds access guidance.
 func (e *StatusError) Error() string {
-	if e.Status == http.StatusForbidden {
-		permission := ""
-		if e.Method == http.MethodGet && e.applicationsPath != "" && strings.HasPrefix(e.Path, e.applicationsPath) {
-			permission = "Reading app registrations requires the delegated Microsoft Graph permission " +
-				"`Application.Read.All` (or a sufficient broader permission), with admin consent " +
-				"for the calling client, Azure CLI, not the target app registration. Your user " +
-				"also needs directory read access: default member permissions can suffice; " +
-				"Directory Readers is a supported read-only role. Azure subscription " +
-				"Owner/Contributor roles do not grant this access.\n"
-		}
-		return "Microsoft Graph denied access (HTTP 403). Your signed-in Azure CLI account " +
-			"does not have permission to perform this operation in the selected tenant.\n" +
-			permission +
-			"Check the account and tenant with `az account show`. If they are incorrect, " +
-			"sign in to the intended tenant with `az login --tenant <tenant-id>`.\n" +
-			"If they are correct, ask your Microsoft Entra administrator to check the " +
-			"Microsoft Graph permissions and admin consent for Azure CLI, and your " +
-			"account's directory roles or app ownership. Signing in again alone does not " +
-			"grant permissions.\n" +
-			fmt.Sprintf("Technical details: %s %s failed with HTTP 403: %s", e.Method, e.Path, e.Body)
+	if e.Status != http.StatusForbidden {
+		return fmt.Sprintf("%s %s failed with HTTP %d: %s", e.Method, e.Path, e.Status, e.Body)
 	}
-	return fmt.Sprintf("%s %s failed with HTTP %d: %s", e.Method, e.Path, e.Status, e.Body)
+	permission := ""
+	if e.Method == http.MethodGet && e.applicationsPath != "" && strings.HasPrefix(e.Path, e.applicationsPath) {
+		permission = "Reading app registrations requires the delegated Microsoft Graph permission " +
+			"`Application.Read.All` (or a sufficient broader permission), with admin consent " +
+			"for the calling client, Azure CLI, not the target app registration. Your user " +
+			"also needs directory read access: default member permissions can suffice; " +
+			"Directory Readers is a supported read-only role. Azure subscription " +
+			"Owner/Contributor roles do not grant this access.\n"
+	}
+	return "Microsoft Graph denied access (HTTP 403). Your signed-in Azure CLI account " +
+		"does not have permission to perform this operation in the selected tenant.\n" +
+		permission +
+		"Check the account and tenant with `az account show`. If they are incorrect, " +
+		"sign in to the intended tenant with `az login --tenant <tenant-id>`.\n" +
+		"If they are correct, ask your Microsoft Entra administrator to check the " +
+		"Microsoft Graph permissions and admin consent for Azure CLI, and your " +
+		"account's directory roles or app ownership. Signing in again alone does not " +
+		"grant permissions.\n" +
+		fmt.Sprintf("Technical details: %s %s failed with HTTP 403: %s", e.Method, e.Path, e.Body)
 }
 
 // statusHandler turns every non-2xx response into a StatusError carrying the raw

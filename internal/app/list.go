@@ -24,18 +24,14 @@ type listedApp struct {
 	sortKey  string
 }
 
+// collectApplications returns up to o.ListLimit applications sorted by name
+// (ASCII case-insensitive, stable), and whether more exist beyond the limit.
+// The limit applies in Graph's order, before sorting.
 func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) ([]listedApp, bool, error) {
 	limit := o.ListLimit
-	q := &applications.ApplicationsRequestBuilderGetQueryParameters{
-		Select: []string{"id", "appId", "displayName"},
-		Top:    new(int32(min(limit, 999))),
-	}
-	if o.Name != nil {
-		q.Filter = new("startswith(displayName,'" + strings.ReplaceAll(strings.TrimSpace(*o.Name), "'", "''") + "')")
-	}
 	apps := []listedApp{}
 	more := false
-	err := g.ApplicationPages(ctx, q, func(page models.ApplicationCollectionResponseable, hasNext bool) (bool, error) {
+	err := g.ApplicationPages(ctx, listQuery(o), func(page models.ApplicationCollectionResponseable, hasNext bool) (bool, error) {
 		items := page.GetValue()
 		if items == nil {
 			return false, errors.New("Graph application list is missing a 'value' array.")
@@ -56,11 +52,11 @@ func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) (
 			name := deref(item.GetDisplayName(), "")
 			apps = append(apps, listedApp{Name: name, ClientID: *clientID, ID: *id, sortKey: strings.ToUpper(name)})
 		}
-		if len(apps) == limit {
-			more = more || hasNext
-			return true, nil
+		if len(apps) < limit {
+			return false, nil
 		}
-		return false, nil
+		more = more || hasNext
+		return true, nil
 	})
 	if err != nil {
 		return nil, false, err
@@ -69,32 +65,33 @@ func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) (
 	return apps, more, nil
 }
 
+// listQuery selects only the listed fields and pages at most 999 items, the
+// Graph maximum. --name filters by display-name prefix.
+func listQuery(o *cli.Options) *applications.ApplicationsRequestBuilderGetQueryParameters {
+	q := &applications.ApplicationsRequestBuilderGetQueryParameters{
+		Select: []string{"id", "appId", "displayName"},
+		Top:    new(int32(min(o.ListLimit, 999))),
+	}
+	if o.Name != nil {
+		q.Filter = new("startswith(displayName,'" + strings.ReplaceAll(strings.TrimSpace(*o.Name), "'", "''") + "')")
+	}
+	return q
+}
+
+// list prints the signed-in tenant and its applications. With --json, stdout
+// carries only the JSON array; the tenant and notices go to stderr.
 func list(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
-	orgs, err := g.Organization(ctx)
+	tenantID, tenantName, err := currentTenant(ctx, g)
 	if err != nil {
 		return err
 	}
-	if orgs == nil || len(orgs.GetValue()) != 1 {
-		return errors.New("Graph must return exactly one tenant organization.")
-	}
-	tenants := orgs.GetValue()
-	if tenants[0] == nil || tenants[0].GetId() == nil {
-		return graph.MissingFieldError("id")
-	}
-	if tenants[0].GetDisplayName() == nil {
-		return graph.MissingFieldError("displayName")
-	}
-	tenantID, tenantName := *tenants[0].GetId(), *tenants[0].GetDisplayName()
 	apps, more, err := collectApplications(ctx, o, g)
 	if err != nil {
 		return err
 	}
 	if o.JSON {
 		fmt.Fprintf(env.Stderr, "Tenant: %s\nTenant ID: %s\n", strconv.Quote(tenantName), tenantID)
-		encoder := json.NewEncoder(env.Stdout)
-		encoder.SetIndent("", "  ")
-		encoder.SetEscapeHTML(false)
-		if err := encoder.Encode(apps); err != nil {
+		if err := writeListJSON(env.Stdout, apps); err != nil {
 			return err
 		}
 		if more {
@@ -106,6 +103,34 @@ func list(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 		return err
 	}
 	return writeListText(env.Stdout, apps, more, o.Name)
+}
+
+// currentTenant returns the ID and display name of the only organization
+// visible to the signed-in account.
+func currentTenant(ctx context.Context, g *graph.Client) (id, name string, err error) {
+	orgs, err := g.Organization(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	if orgs == nil || len(orgs.GetValue()) != 1 {
+		return "", "", errors.New("Graph must return exactly one tenant organization.")
+	}
+	org := orgs.GetValue()[0]
+	if org == nil || org.GetId() == nil {
+		return "", "", graph.MissingFieldError("id")
+	}
+	if org.GetDisplayName() == nil {
+		return "", "", graph.MissingFieldError("displayName")
+	}
+	return *org.GetId(), *org.GetDisplayName(), nil
+}
+
+// writeListJSON writes apps as an indented JSON array without HTML escaping.
+func writeListJSON(w io.Writer, apps []listedApp) error {
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(apps)
 }
 
 // writeListText prints the human-readable list. Remote display names are

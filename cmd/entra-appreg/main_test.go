@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -9,8 +11,34 @@ import (
 	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 )
 
+// runOffline calls run with a non-terminal stdin (a closed pipe) and a regular
+// file as stderr, returning the exit code and both outputs.
+func runOffline(t *testing.T, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdinRead.Close()
+	_ = stdinWrite.Close()
+	errFile, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer errFile.Close()
+	var out bytes.Buffer
+
+	code = run(args, stdinRead, &out, errFile)
+
+	errText, err := os.ReadFile(errFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, out.String(), string(errText)
+}
+
 // TestExitCodes runs the entry point offline: PATH is empty so az can never be
-// reached, stdin is a pipe (not a terminal) and stderr is a regular file.
+// reached.
 func TestExitCodes(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	for _, tc := range []struct {
@@ -29,44 +57,47 @@ func TestExitCodes(t *testing.T) {
 		{args: []string{"list"}, code: 1, stderr: "Authentication failed: "},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			stdinRead, stdinWrite, err := os.Pipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer stdinRead.Close()
-			_ = stdinWrite.Close()
-			stderr, err := os.CreateTemp(t.TempDir(), "stderr")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer stderr.Close()
-			var stdout bytes.Buffer
-
-			code := run(tc.args, stdinRead, &stdout, stderr)
-
-			errText, err := os.ReadFile(stderr.Name())
-			if err != nil {
-				t.Fatal(err)
-			}
+			code, stdout, stderr := runOffline(t, tc.args...)
 			if code != tc.code {
-				t.Errorf("exit %d, want %d\nstdout: %s\nstderr: %s", code, tc.code, stdout.String(), errText)
+				t.Errorf("exit %d, want %d\nstdout: %s\nstderr: %s", code, tc.code, stdout, stderr)
 			}
-			if !strings.Contains(stdout.String(), tc.stdout) {
-				t.Errorf("stdout %q lacks %q", stdout.String(), tc.stdout)
+			if !strings.Contains(stdout, tc.stdout) {
+				t.Errorf("stdout %q lacks %q", stdout, tc.stdout)
 			}
-			if !strings.Contains(string(errText), tc.stderr) {
-				t.Errorf("stderr %q lacks %q", errText, tc.stderr)
+			if !strings.Contains(stderr, tc.stderr) {
+				t.Errorf("stderr %q lacks %q", stderr, tc.stderr)
 			}
 		})
 	}
 }
 
 func TestVersionOutputIsExact(t *testing.T) {
-	var stdout bytes.Buffer
-	if code := run([]string{"--version"}, os.Stdin, &stdout, os.Stderr); code != 0 {
-		t.Fatalf("exit %d", code)
+	code, stdout, stderr := runOffline(t, "--version")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if got, want := stdout.String(), "entra-appreg "+cli.Version+"\n"; got != want {
-		t.Errorf("got %q, want %q", got, want)
+	if want := "entra-appreg " + cli.Version + "\n"; stdout != want {
+		t.Errorf("got %q, want %q", stdout, want)
+	}
+}
+
+func TestFailMapsUsageErrorsToExit2AndOthersToExit1(t *testing.T) {
+	usage := &cli.UsageError{Message: "bad input"}
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		want string
+	}{
+		{"usage", usage, 2, "bad input\n"},
+		{"wrapped usage", fmt.Errorf("context: %w", usage), 2, "bad input\n"},
+		{"runtime", errors.New("boom"), 1, "Error: boom\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var w bytes.Buffer
+			if code := fail(&w, tc.err); code != tc.code || w.String() != tc.want {
+				t.Errorf("fail = %d %q, want %d %q", code, w.String(), tc.code, tc.want)
+			}
+		})
 	}
 }

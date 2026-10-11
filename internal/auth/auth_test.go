@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/AaronSaikovski/entra-appreg/internal/graph"
 	"os/exec"
 	"strings"
 	"sync"
@@ -14,6 +13,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
+	"github.com/AaronSaikovski/entra-appreg/internal/graph"
 )
 
 const (
@@ -143,33 +144,43 @@ func TestNonCreateCommandsCheckLoginWithoutPinningTokenTenant(t *testing.T) {
 }
 
 func TestInvalidTenantStopsBeforeTokenRequestWithoutDisclosingOutput(t *testing.T) {
-	for _, out := range []string{"", " \t\n", privateOutput, tenant + "; echo unsafe", "\xff"} {
-		f := &fixture{results: []runResult{ok(out)}, token: opaqueToken}
-		e := authErr(t, f, true, timeout)
-		if !strings.Contains(e, "UUID") || strings.Contains(e, privateOutput) || strings.Contains(e, "unsafe") {
-			t.Fatalf("%q: %s", out, e)
-		}
-		if len(f.calls) != 1 || len(f.credOpts) != 0 {
-			t.Fatalf("%q: calls %v", out, f.calls)
-		}
+	for _, out := range []string{
+		"",
+		" \t\n",
+		privateOutput,
+		tenant + "; echo unsafe",
+		"\xff",
+		"\xff" + tenant + "\xff", // uuid.Parse alone accepts any outer bytes here
+	} {
+		t.Run(fmt.Sprintf("%q", out), func(t *testing.T) {
+			f := &fixture{results: []runResult{ok(out)}, token: opaqueToken}
+			e := authErr(t, f, true, timeout)
+			if e != msgInvalidTenant {
+				t.Fatal(e)
+			}
+			if len(f.calls) != 1 || len(f.credOpts) != 0 {
+				t.Fatalf("calls %v", f.calls)
+			}
+		})
 	}
 }
 
 func TestMalformedTokensFailWithoutDisclosure(t *testing.T) {
-	cases := []*fixture{
-		{tokenErr: errors.New("malformed " + privateOutput + " " + opaqueToken)},
-		{token: ""},
-		{token: " \t\n"},
-	}
-	for i, f := range cases {
-		f.results = []runResult{ok(tenant)}
-		e := authErr(t, f, false, timeout)
-		if strings.Contains(e, privateOutput) || strings.Contains(e, opaqueToken) {
-			t.Fatalf("case %d leaked: %s", i, e)
-		}
-		if len(f.calls) != 2 {
-			t.Fatalf("case %d calls %v", i, f.calls)
-		}
+	for name, f := range map[string]*fixture{
+		"token error": {tokenErr: errors.New("malformed " + privateOutput + " " + opaqueToken)},
+		"empty":       {token: ""},
+		"whitespace":  {token: " \t\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.results = []runResult{ok(tenant)}
+			e := authErr(t, f, false, timeout)
+			if strings.Contains(e, privateOutput) || strings.Contains(e, opaqueToken) {
+				t.Fatalf("leaked: %s", e)
+			}
+			if len(f.calls) != 2 {
+				t.Fatalf("calls %v", f.calls)
+			}
+		})
 	}
 }
 
@@ -182,19 +193,21 @@ func TestCredentialInitFailureDoesNotDisclose(t *testing.T) {
 
 func TestProcessFailureNeverDisclosesStderrStdoutOrIOErrorDetails(t *testing.T) {
 	for _, pin := range []bool{true, false} {
-		for _, r := range []runResult{
-			{out: []byte(opaqueToken), err: &exec.ExitError{}},
-			{err: fmt.Errorf("%s: %w", privateOutput, exec.ErrNotFound)},
-			{err: errors.New(privateOutput)},
+		for name, r := range map[string]runResult{
+			"exit":      {out: []byte(opaqueToken), err: &exec.ExitError{}},
+			"not found": {err: fmt.Errorf("%s: %w", privateOutput, exec.ErrNotFound)},
+			"start":     {err: errors.New(privateOutput)},
 		} {
-			f := &fixture{results: []runResult{r}}
-			e := authErr(t, f, pin, timeout)
-			if !strings.Contains(e, "Azure CLI") || strings.Contains(e, privateOutput) || strings.Contains(e, opaqueToken) {
-				t.Fatal(e)
-			}
-			if len(f.calls) != 1 {
-				t.Fatalf("calls %v", f.calls)
-			}
+			t.Run(fmt.Sprintf("pin=%v/%s", pin, name), func(t *testing.T) {
+				f := &fixture{results: []runResult{r}}
+				e := authErr(t, f, pin, timeout)
+				if !strings.Contains(e, "Azure CLI") || strings.Contains(e, privateOutput) || strings.Contains(e, opaqueToken) {
+					t.Fatal(e)
+				}
+				if len(f.calls) != 1 {
+					t.Fatalf("calls %v", f.calls)
+				}
+			})
 		}
 	}
 	f := &fixture{results: []runResult{{err: exec.ErrNotFound}}}
@@ -207,27 +220,42 @@ func TestUnavailableLoginStopsBeforeTokenAcquisitionForEveryCommand(t *testing.T
 	for _, pin := range []bool{true, false} {
 		f := &fixture{results: []runResult{exitFail()}}
 		e := authErr(t, f, pin, timeout)
-		if e != msgNoLogin || strings.Contains(e, privateOutput) || len(f.calls) != 1 {
-			t.Fatalf("%s calls %v", e, f.calls)
+		if e != msgNoLogin || len(f.calls) != 1 {
+			t.Fatalf("pin=%v: %s calls %v", pin, e, f.calls)
 		}
 	}
 }
 
 func TestDeadlineCancelsTenantDiscoveryAndTokenCollection(t *testing.T) {
 	for _, pin := range []bool{true, false} {
-		for pending := 1; pending <= 2; pending++ {
-			f := &fixture{blockRun: pending == 1, blockToken: pending == 2}
-			if pending == 2 {
-				f.results = []runResult{ok(tenant)}
-			}
-			e := authErr(t, f, pin, 10*time.Millisecond)
-			if e != msgTimeout {
-				t.Fatalf("pin=%v pending=%d: %s", pin, pending, e)
-			}
-			if len(f.calls) != pending || !f.cancelled {
-				t.Fatalf("pin=%v pending=%d calls %v cancelled %v", pin, pending, f.calls, f.cancelled)
-			}
+		for _, step := range []string{"tenant", "token"} {
+			t.Run(fmt.Sprintf("pin=%v/%s", pin, step), func(t *testing.T) {
+				f := &fixture{blockRun: step == "tenant", blockToken: step == "token"}
+				wantCalls := 1
+				if step == "token" {
+					f.results = []runResult{ok(tenant)}
+					wantCalls = 2
+				}
+				if e := authErr(t, f, pin, 10*time.Millisecond); e != msgTimeout {
+					t.Fatal(e)
+				}
+				if len(f.calls) != wantCalls || !f.cancelled {
+					t.Fatalf("calls %v cancelled %v", f.calls, f.cancelled)
+				}
+			})
 		}
+	}
+}
+
+func TestTokenArrivingAfterDeadlineIsDiscarded(t *testing.T) {
+	f := &fixture{results: []runResult{ok(tenant)}, token: opaqueToken}
+	slow := func(o *azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error) {
+		time.Sleep(20 * time.Millisecond)
+		return f.newCred(o)
+	}
+	_, err := authenticateWith(context.Background(), false, f.run, slow, 10*time.Millisecond)
+	if err == nil || err.Error() != msgTimeout {
+		t.Fatalf("err = %v, want %q", err, msgTimeout)
 	}
 }
 

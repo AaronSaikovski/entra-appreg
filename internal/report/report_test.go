@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -99,19 +100,28 @@ func TestConcurrentWritersEachClaimADistinctCompleteReport(t *testing.T) {
 }
 
 func TestSanitizesPlatformCharactersAndTrimsOnlySpacesAndDots(t *testing.T) {
-	dir := t.TempDir()
-	if got := filepath.Base(mustWrite(t, dir, " .a/\x00b. ", "report")); got != "a__b.txt" {
-		t.Fatalf("got %q", got)
-	}
-	if got := filepath.Base(mustWrite(t, dir, " . . ", "report")); got != "app-registration.txt" {
-		t.Fatalf("got %q", got)
-	}
-	want := "a\\b:c*?\"<>|.txt"
-	if runtime.GOOS == "windows" {
-		want = "a_b_c______.txt"
-	}
-	if got := filepath.Base(mustWrite(t, dir, "a\\b:c*?\"<>|", "report")); got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	windows := runtime.GOOS == "windows"
+	for _, tc := range []struct {
+		in, want, windowsWant string // windowsWant "" means same as want
+	}{
+		{in: " .a/\x00b. ", want: "a__b.txt"},
+		{in: " . . ", want: "app-registration.txt"},
+		{in: "", want: "app-registration.txt"},
+		{in: "My App.", want: "My-App.txt"},
+		{in: "a.b c", want: "a.b-c.txt"},
+		{in: "\x00 a /", want: "_-a-_.txt"},
+		{in: "a\\b:c*?\"<>|", want: "a\\b:c*?\"<>|.txt", windowsWant: "a_b_c______.txt"},
+		{in: "tab\there", want: "tab\there.txt", windowsWant: "tab_here.txt"},
+	} {
+		t.Run(strconv.Quote(tc.in), func(t *testing.T) {
+			want := tc.want
+			if windows && tc.windowsWant != "" {
+				want = tc.windowsWant
+			}
+			if got := filepath.Base(mustWrite(t, t.TempDir(), tc.in, "report")); got != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
 	}
 }
 
