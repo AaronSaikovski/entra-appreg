@@ -1,0 +1,41 @@
+name: build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install Go dependencies
+        run: go mod download
+
+      - name: Lint
+        run: |
+          go vet ./...
+          go fmt ./... && git diff --exit-code
+
+      - name: Build
+        run: go build -o bin/entra-appreg ./cmd/entra-appreg
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check

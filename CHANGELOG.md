@@ -4,6 +4,72 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ## Unreleased
 
+### Added
+
+- **The version now comes from git tags.** `internal/cli/version.go` no longer hard-codes `0.0.1`.
+  - The unexported `version` is injected with `-ldflags -X …/internal/cli.version=<tag>`, by GoReleaser (`{{ .Version }}`) and by Taskfile `build`/`release`/`run`/`check` (`git describe --tags --always --dirty`). Without it, `cli.Version()` falls back to Go's build-info module version, then `dev`.
+  - `release.yml` no longer compares the tag with a source constant; it builds with the tag and checks that `--version` reports it. The CI smoke injects `v0.0.0-ci` and checks for it.
+  - New `TestResolveVersionPrefersLinkedTagThenBuildInfoThenDev`.
+- **Docs and help text synced.** The help AUTHENTICATION sections had still said `create` "discovers and pins" the tenant; they now describe one `az` call in the active context, with the tenant read from Graph. README and AGENTS.md were updated for the single `az` call, the error-body cap, the create step order, versioning, and the test count.
+- **Verification on macOS:**
+  - `task check`, staticcheck and actionlint (all workflows) pass, and `goreleaser check` passes.
+  - `task build` → `entra-appreg 1.0.1-5-gf5a00f1-dirty`; `-X …version=v0.0.1` → `entra-appreg 0.0.1`; a plain `go build` → a VCS pseudo-version; a GoReleaser snapshot → `entra-appreg 1.0.1-SNAPSHOT-f5a00f1`.
+  - The old Rust-era `v1.0.1` tag is the nearest tag until `v0.0.1` is pushed.
+- Performance and memory fixes:
+  - **Auth starts Azure CLI once instead of twice.** The `az account show` pre-check is gone. `exec.LookPath` checks that `az` is installed without starting a process, and azidentity's `AzureCLICredential` gets the token for the active context. `create` now takes the report's tenant ID from Graph `/organization` (msgraph-sdk-go, same token) after validation and before the POST, so the recorded tenant always matches the token.
+  - **Auth messages.** Signed-out and expired-token failures now share one fixed message, because azidentity reports them the same way. The invalid-tenant and could-not-run messages no longer apply.
+  - **Graph error bodies are capped at 1 MiB** and marked when truncated, so memory stays bounded.
+  - **Binary size is unchanged** (33.6 MB release). Unused msgraph request builders are already dropped by the linker. The remaining size is msgraph-sdk-go's typed models, which are needed to keep the typed SDK. Build flags are already `-trimpath -s -w`.
+  - **Build cost:** CI already caches Go builds; no change.
+  - **Verification on macOS:**
+    - `task check`, `go test -race ./...` and staticcheck pass.
+    - With a fake `az` that logs each call, `list` and `create` each started exactly one process (`account get-access-token -o json --resource https://graph.microsoft.com`). The fake's stderr never appeared in the output.
+    - With no `az` on `PATH` the output is still `Azure CLI was not found` (exit 1).
+    - New tests cover the org lookup failing before the POST and the body cap.
+    - Real `az` and live Graph were not exercised.
+- Refactored the Go code toward idiomatic Go, per package, with no change in behavior:
+  - `cli`: a command table, smaller pre-parse helpers, and one ordered option-group table for validation. The Cobra tree holds only the requested subcommand.
+  - `auth`: the deadline is handled in one place, and `runAz` now really discards az stderr. With `nil` a copy was kept inside `*exec.ExitError`, though it was never printed.
+  - `graph`: smaller constructors, early returns, and an `ApplicationPages` loop with a dead branch removed.
+  - `app`: `create` is split into `planCreate` → `checkNameAvailable` → `postApplication` → `addScope` → `addSecret` → `reportContents`/`writeReport`; expose/list/delete helpers were extracted.
+  - `report`: the claim loop was split into helpers.
+  - `cmd`: named exit codes, with one place mapping errors to exits.
+  - Tests: helpers use `t.Helper`, repetitive tests are table-driven, and new exact-output and validation-order tests were written and passed before the refactor.
+  - Verification on macOS:
+    - `task check` and `go test -race` pass; staticcheck is clean.
+    - Coverage moved from cmd 53.8% → 71.8%, app 88.8 → 93.0, auth 84.6 → 93.8, cli 96.0 → 98.8, graph 89.2 → 90.4, report 89.2 → 88.6.
+    - Running 41 invocations against the binary built from `HEAD` and the refactored one gave byte-identical stdout, stderr and exit codes.
+    - 20,001 random argument lists parsed identically by the old and new parser.
+- Rewrote README for the Go CLI at version 0.0.1 (testing). It now covers install (release archives or source), auth, command reference, reports and secrets, limits, permissions and troubleshooting, development, CI/release and the smoke checklist. Per-change verification history moved out of the README; it stays in this changelog.
+- GitHub Actions updated for the Go layout:
+  - `release.yml` checks that the tag equals `v` + `Version`, runs the quality gates, and then runs GoReleaser with a new `.goreleaser.yaml`. It no longer deletes existing releases or passes `--force`.
+  - `goreleaser.yml` was a duplicate trigger on the same tags and has been removed.
+  - `build.yml` builds `./cmd/entra-appreg` and runs `goreleaser check`.
+  - `test.yml` runs `go test -race ./...` (there is no `./tests` directory), staticcheck pinned to a Go-1.27-compatible commit with `staticcheck.conf`, and govulncheck.
+  - All workflows take Go from `go.mod`.
+  - Security: govulncheck found reachable vulnerabilities in `golang.org/x/net` v0.58.0 and in the Go 1.27.1 standard library (`net/http`). The fix moved `go.mod` to Go 1.27.2 and `x/net` to v0.60.0+.
+  - Verification on macOS:
+    - `task check` passed; staticcheck and actionlint (all workflows) are clean; govulncheck reports no called vulnerabilities.
+    - `goreleaser check` and `goreleaser release --snapshot` produced all five archives plus the checksums file, each archive holding the binary, README and LICENSE.
+    - The tag guard accepted `v0.0.1` and rejected `v1.0.1`.
+    - Hosted runs were not exercised.
+- The Go port at the repository root (module `github.com/AaronSaikovski/entra-appreg`) is now the CLI. Its version is reset to `0.0.1` while it is in testing (`internal/cli/version.go`); the 1.0.x entries below are for the former Rust implementation. It uses Cobra for the command line, the Azure SDK for Go `azidentity.AzureCLICredential` for auth, and `msgraph-sdk-go` for Graph. Messages, ordering, exit codes and report layout match the Rust implementation, which has been deleted. Changes from Rust:
+  - List text output quotes display names, so control characters are escaped.
+  - A missing `keyId` in the `addPassword` reply no longer loses the secret: it is written to the report and the command then exits 1.
+  - Windows reserved device names get a `_` prefix in report filenames.
+  - Next-page links must stay under `/v1.0/`.
+  - Effects of using the typed SDK are listed under README operational limits.
+- CI runs a `Go checks` job on Linux, macOS and Windows. Its smoke test checks the version, the help topics, and that `list --top 0` and non-terminal `delete` exit 2. `.gitignore`, README, AGENTS.md and `Taskfile.yml` (including a new `task check`) describe the root layout. The user-owned `release.yml`, `build.yml`, `test.yml` and `goreleaser.yml` were not changed or verified.
+- Verification on macOS: `task check` passed (gofmt, vet native and `GOOS=windows`, build, tests, binary smoke). A real-binary smoke checked help precedence, rejection of `--name=x` and of a missing value, no arguments (exit 2), and missing `az` (exit 1). `actionlint` passed on `ci.yml`. Not verified: live Azure, Windows/Linux runs, and the Windows-only reserved-name test (compiled only).
+- Two-axis review of the uncommitted Go port against `HEAD`, followed by an idiomatic refactor with no behavior change:
+  - `resolveScope`/`resolveLifetime` return `error`.
+  - `cli.Usagef`, `graph.MissingFieldError` and `graph.Scope` are the single shared helpers.
+  - `displayPath` and `errRepeatedNextLink` replace duplicated code. List alone checks the organization count.
+  - The scope type is now a typed `userConsent` bool, and `auth.Context` is renamed `auth.Session`.
+  - Test-only graph exports moved to `export_test.go`, and doc comments were added.
+  - The doc comment on `Version`, a no-op CI `working-directory`, and stale CHANGELOG/README text were corrected.
+  - Verification: `task check` passed. staticcheck reports only ST1005 for the intentionally preserved user-facing messages (53 before, 48 after). A binary smoke confirmed messages and exit codes are unchanged.
+
 ### Review
 
 - Reviewed the current Rust codebase for modularity and correctness. Existing module split is sound; recommend narrower implementation visibility and shared scope-option membership rather than a framework or wholesale rewrite. Reproduced an outstanding expose-api defect: non-array `identifierUris` is treated as missing and replaced in a PATCH. All 54 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. Review only; production code unchanged, no live Azure calls.

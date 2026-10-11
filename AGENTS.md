@@ -2,82 +2,158 @@
 
 ## Project Overview
 
-Rust CLI for Microsoft Entra ID SPA app registrations: `create` (default), `expose-api`, read-only `list`, and interactively confirmed `delete`. API scopes and target client secrets are opt-in. The Cargo package lives at the repository root; this is not a hosted service.
+`entra-appreg` is a Go CLI for Microsoft Entra ID single-page-app registrations. It has four commands:
+
+- `create`: the default command.
+- `expose-api`: adds one scope to an existing registration.
+- `list`: read-only.
+- `delete`: deletes only after interactive confirmation.
+
+Scopes and client secrets are opt-in. The CLI authenticates through the operator's existing `az login`. It is not a service, and it has no database or config file.
 
 ## Architecture & Data Flow
 
-`main.rs` runs a current-thread Tokio runtime: parse → require terminal stdin/stderr for delete → authenticate → construct one Graph client → dispatch command → map exit status. Requests are sequential; there is no Graph SDK, DI container, database, or configuration-file loader.
+```
+cmd/entra-appreg.run → cli.Parse → (help/version/no-args exit) → delete TTY gate
+  → auth.Authenticate → graph.New(staticCredential)
+  → app.Run(ctx, opts, client, Env) → create | exposeAPI | list | deleteApp → report.Write (create only)
+```
 
-- `cli.rs`: Clap-derived options plus an explicit pre-parser. Unknown commands fail before version/help; version precedes help; help precedes validation/authentication. Options are case-sensitive and space-separated; scalars use the last value, redirect aliases accumulate. Preserve supplied-empty values and deferred creation semantics.
-- `auth.rs`: official `AzureCliCredential` reuses `az login`. Create discovers and validates the tenant before pinning token acquisition; list/expose/delete use the active CLI context. Tokens remain opaque. The complete authentication operation has a ten-second deadline; cancellation kills the directly spawned process, not necessarily shell descendants.
-- `graph.rs`: one bearer-authenticated `reqwest` client, fixed public-cloud Graph v1.0 endpoint, ten-second request timeout, no redirects/retries. Only 404 permits fallback from object-ID to client-ID lookup; malformed success, authorization errors, and service failures must stop the operation.
-- `app.rs`: create checks optional `--appid` before creation-field validation. Existing registrations are no-ops; two lookup 404s permit creation. Sequence: POST app → flush recovery IDs → optional scope PATCH → optional `addPassword` → report. Expose merges fetched API settings/scopes and preserves identifier URIs; reject duplicate scope names case-insensitively. List validates next-link origin, rejects cycles, collects then sorts; JSON stdout stays JSON-only.
-- Delete resolves the target before prompting, escapes remote fields, and requires exact `yes` plus a newline. Refusal/Enter/EOF cancels with exit 0; confirmation I/O failure prevents the DELETE. Delete only the resolved object ID, with no force bypass, retry, restore, or report cleanup.
-- `report.rs`: sanitize filename, atomically claim a collision-safe file in the invocation directory, write and flush. Unix mode is 0600; Windows inherits directory ACLs. Genuine report failure prints the complete report, including any one-time secret, to stdout for recovery.
+Requests are sequential. The context is `context.Background()`; only auth has an overall deadline.
 
-No name-based idempotency, rollback, or concurrent-update protection is provided. Preserve distinct object `id` and client `appId`, and the `AUTH_APP_ID`/`AUTH_CLIENT_ID` output contract.
+- **`internal/cli`: three-phase parse.** Cobra must never broaden syntax or print output.
+  1. **Pre-parse.** The command word is lowercased. An unknown command fails first. `--version` beats `--help` anywhere, including in a value position. `--` and `--x=y` are rejected.
+  2. **Cobra** (`flags.go`). A fresh, silent tree with only the requested subcommand is built per call, and all 17 flags are `PersistentFlags`.
+     - `optionalString` rejects values starting with `--`.
+     - `redirectList` accumulates values; `--redirect-url` is normalized to `--redirect-urls`.
+     - A hidden `--help` with no `-h` replaces Cobra's own. A `ran` guard catches cases where no subcommand ran.
+  3. **`validate()`** is a switch on the command. Forbidden-option messages come from one ordered table of all options, each tagged with group bits; adding an option means adding one row there.
+  - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
+- **`internal/auth`: one `az` process per command.**
+  - `exec.LookPath("az")` checks the install without starting a process (on Windows, PATHEXT finds `az.cmd`). If `az` is missing, the error is the "not found" message.
+  - `AzureCLICredential` with empty options requests the token for the active az context, under a 10 s deadline. There is no `az account show` pre-check and no tenant pinning. Each Python `az` start costs about a second, so don't add a second `az` call.
+  - Returns a `staticCredential` whose `String`/`GoString` are redacted, so Graph calls never start `az` again.
+  - Error messages are fixed constants. Any `GetToken` failure maps to the one `msgNoToken` message: azidentity reports signed-out and expired sessions the same way, and its text carries `az` stderr, so never wrap it.
+- **Tenant ID** comes from Graph `/organization` through the same token (`currentTenant` in `list.go`, which requires exactly one org). `create` calls it after validation and the name check, before the POST, so the reported tenant is exactly the token's tenant.
+- **`internal/graph`: `msgraph-sdk-go` on a hardened transport.**
+  - Kiota transport with only `ParametersNameDecodingHandler` and `statusHandler`: no retry, redirect or compression. `http.Client` has a 10 s timeout and returns `ErrUseLastResponse` instead of following redirects.
+  - `statusHandler` turns every non-2xx response into `*StatusError` carrying the raw body, capped at 1 MiB (`maxErrorBody`). A longer body is cut at the cap and marked as truncated. The 403 guidance and the `Application.Read.All` hint (GET `/applications` only) live in `status.go`.
+  - `describe()` wraps all other failures.
+  - `GetApplication` tries the object ID first, then the `appId` alternate key, but only after a 404. Two 404s return `(nil, nil)`.
+  - `ApplicationPages` rejects repeated next links. `validateNextLink` requires the same scheme, host and port, no userinfo or fragment, and a path under `/v1.0/`. `internal/graph/export_test.go` exposes unexported helpers to the external `graph_test` package.
+  - `graph.MissingFieldError` is the one helper for "Graph response requires … '<field>'" errors, and `graph.Scope` is the only Graph scope constant.
+  - The base URL is fixed. `NewForBase` exists only for loopback tests; do not add an endpoint override.
+- **Backing-store rule.** msgraph models fetched from Graph serialize only fields changed after the fetch.
+  - Build every POST/PATCH body from fresh `models.New…()` objects. Never mutate and resend a fetched model.
+  - `expose.go` `copyAPI`/`copyScope` show the pattern. Call each setter only when the fetched getter is non-nil, and copy `AdditionalData` with `maps.Clone`.
+- **`internal/app`: the workflows.**
+  - `create` sequence, each step taking the validated `createPlan`:
+    1. Optional `--appid` lookup (`applicationExists`). A found app means exit 0 with nothing changed.
+    2. Validate (`planCreate`): name → audience → redirects → exact-string dedup → scope → lifetime.
+    3. Duplicate-name preflight (`checkNameAvailable`). A match is a usage error.
+    4. Tenant lookup (`currentTenant`). A failure stops the command before anything is created.
+    5. POST (`postApplication`), then print `AUTH_APP_ID`/`AUTH_CLIENT_ID` immediately.
+    6. Scope PATCH (`addScope`).
+    7. `addPassword` (`addSecret`).
+    8. Report (`reportContents` builds the text without side effects; `writeReport` writes it).
+  - `resolveScope`/`resolveLifetime` return `*cli.UsageError` as `error`; build usage errors with `cli.Usagef`.
+  - `list`: `/organization` must return exactly one org. In `--json` mode stdout is only the JSON array; tenant lines and notices go to stderr. Text output quotes names with `strconv.Quote`.
+  - `delete`: resolves the target before prompting. The prompt goes to stderr with quoted fields. Only `yes\n` or `yes\r\n` confirms; EOF cancels with exit 0.
+- **`internal/report`**: sanitizes the name. Spaces become `-`. Windows reserved device names get a `_` prefix (`NUL` → `_NUL.txt`). The file is claimed with `O_EXCL` and mode 0600; on collision the name gets a `-1`, `-2`, … suffix. Reports go to the current directory and are never overwritten.
 
 ## Key Directories
 
-- `src/`: implementation and inline tests beside private helpers/workflows.
-- `.github/workflows/`: branch/PR CI and tag-triggered release automation.
-- `target/` and `dist/`: generated builds and release archives; ignored by Git.
-
-Reports belong to the caller's working directory, not the source tree. The former .NET implementation and shared Python process suite are removed; do not use their paths or commands.
+| Path | Purpose |
+|---|---|
+| `cmd/entra-appreg/` | `main` plus testable `run(args, stdin *os.File, stdout io.Writer, stderr *os.File) int`. Stdin and stderr are `*os.File` so `term.IsTerminal` works. |
+| `internal/cli/` | Parsing, validation, help text (`help.go`), build version (`version.go`). |
+| `internal/auth/` | `az` presence check and the single Azure CLI token request. |
+| `internal/graph/` | Graph client, `StatusError`, paging, next-link safety. |
+| `internal/graphtest/` | Loopback Graph fixture. Non-test file; import it only from tests. |
+| `internal/app/` | Workflows plus `scope.go`/`lifetime.go` rules. |
+| `internal/report/` | Report writer; platform files `report_windows.go`/`report_other.go`. |
 
 ## Development Commands
 
-Run from the repository root. After Rust changes, all quality gates must pass:
+Run from the repo root. `task check` is the canonical gate; it must pass after every change:
 
 ```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo check --locked --all-targets
-cargo build --locked
-cargo test --locked
-
-# Authentication-free actual-binary smoke
-cargo run --locked -- --version
-cargo run --locked -- --help
-cargo run --locked -- expose-api --help
-cargo run --locked -- delete --help
-# Expected exit 2, before authentication
-cargo run --locked -- list --top 0
-
-# Optimized build
-cargo build --locked --release
+task check            # gofmt -l, go vet, GOOS=windows go vet, go build, go test, then a binary smoke (--version must equal git describe)
+task test             # go test -v ./...
+task run -- list --help
+task build            # → bin/entra-appreg[.exe]
+task release          # CGO_ENABLED=0 -trimpath -ldflags="-s -w" → bin/
+task staticcheck      # pinned Go-1.27-compatible staticcheck commit
+task seccheck         # govulncheck@latest
 ```
 
-Fix formatting with `cargo fmt`; fix Clippy findings rather than weaken `-D warnings` or add blanket allowances. Keep `--` between Cargo options and application arguments. On Windows, built binaries end in `.exe`.
+Without Task:
+
+```sh
+test -z "$(gofmt -l .)" && go vet ./... && GOOS=windows go vet ./... && go build ./... && go test ./...
+go build -ldflags "-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=$(git describe --tags --always --dirty)" -o bin/entra-appreg ./cmd/entra-appreg && bin/entra-appreg --version
+bin/entra-appreg list --top 0          # must exit 2 before auth
+bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
+```
+
+`task lint` (go fmt, `go mod tidy`, `go fix`) and `task deps` (`go get -u ./...`) change files and dependencies. Run them only when you intend those changes. The first build compiles msgraph-sdk-go, which takes minutes and several GB of RAM.
 
 ## Code Conventions & Common Patterns
 
-- Use rustfmt, `snake_case` functions/locals, `PascalCase` types, and existing module boundaries. Keep local CLI state in `Options`; pass the Graph client and tenant explicitly. Reuse scope, lookup, and report helpers rather than duplicate them.
-- Use sequential `await`, `serde_json` payloads, `AppError::Usage` versus runtime `anyhow` errors. Exit codes: 0 success/help/version, 1 operational failure, 2 invalid input/no arguments. Errors go to stderr; preserve Graph error bodies, but never expose raw token/credential output in authentication diagnostics.
-- Preserve exact redirect URI spelling while deduplicating exact strings. Scope rules, UTC lifetime validation, Unicode-safe secret-description truncation, and validation ordering are observable behavior.
-- Private executor/client construction seams and explicit clocks support deterministic tests; do not turn them into production endpoint overrides or a second dependency-injection framework. Use `parking_lot` for test locks where poisoning is not handled.
-- New options require parsing, validation, help, README reference, and supplied-option group updates. Cargo.toml's package version is authoritative: version/help use compile-time `CARGO_PKG_VERSION`, not hardcoded strings. For releases, update Cargo.toml/Cargo.lock, README, changelog, and affected tests, then rebuild.
-- After every review/change, update README and CHANGELOG with behavior, actual verification, review outcomes, and remaining limits. Keep unreleased work under the current version until an intentional release.
+- **Errors and exit codes.**
+  - `*cli.UsageError` exits 2 and prints the bare message.
+  - Other errors exit 1 with an `Error: …` prefix; auth failures print `Authentication failed: …`.
+  - Success, help, version and cancelled delete exit 0.
+  - All diagnostics go to stderr. Keep stdout clean for `AUTH_*` lines and JSON.
+- **Exit-code gotcha.** No arguments, parse errors and a non-TTY delete exit 2. "Not found" on expose or delete exits 1.
+- **Optional options.** `*string` in `cli.Options`: `nil` means not supplied, `""` means supplied empty. Scalars take the last value; redirect values accumulate and keep their raw spelling.
+- **Case-insensitive matching.** Use `cli.EqualFoldASCII` for audience, consent, state, `all`/`custom`, redirect scheme and duplicate scope names.
+- **Injection seams.** Use only these; no DI framework:
+  - `app.Env{Stdout, Stderr, Stdin, Now, ReportDir}`
+  - `auth.authenticateWith(ctx, lookPathFunc, credentialFunc, deadline)`
+  - `graph.NewForBase`
+- **Go version.** The code uses Go 1.26+ `new(expr)` for pointers (e.g. `new(int32(1))`). Keep this rather than adding `ptr` helpers.
+- **Secrets.**
+  - Never print a secret on success.
+  - If the report write fails, print the full report to stdout and exit 1.
+  - A missing `keyId` writes `(not returned by Graph)` and keeps the secret, then exits 1.
+  - Never log tokens.
+- **Report contents.** Labels are padded to column 25. Line endings are CRLF on Windows. Dates use RFC3339Nano UTC, not Graph's original strings.
+- **New options.** Each needs a flag in `flags.go`, validation and option-group membership in `cli.go`, help text, README, and tests.
+- **After every change,** update README (behavior and limits) and CHANGELOG `## Unreleased`, recording the verification actually run.
 
 ## Important Files
 
-- `Cargo.toml` / `Cargo.lock`: root package manifest and pinned resolutions; keep the lockfile tracked and use `--locked`.
-- `src/main.rs`: entry point and exit mapping; `cli.rs`: option and help contract.
-- `auth.rs`, `graph.rs`, `app.rs`, `report.rs` under `src/`: authentication, transport, workflows, and secret-bearing report handling respectively.
-- `.github/workflows/ci.yml`: Linux/macOS/Windows checks on branch pushes, PRs, and manual dispatch.
-- `.github/workflows/release.yml`: five native release targets; tag must match package and executable versions. Publication needs all builds to pass; see README release instructions.
-- `README.md`: usage, options, release instructions, and live smoke checklist. `CHANGELOG.md`: release history. `.gitignore`: report/build/archive exclusions, not protection for already-tracked secrets.
+- `cmd/entra-appreg/main.go`: entry point, exit mapping, delete TTY gate.
+- `internal/cli/version.go`: versions come only from git tags. The unexported `version` var is set at link time with `-X github.com/AaronSaikovski/entra-appreg/internal/cli.version=<tag>` by GoReleaser (`{{ .Version }}`) and the Taskfile (`git describe --tags --always --dirty`). `cli.Version()` strips a leading `v` and falls back to the Go build-info module version, then `dev`. Never hard-code a version number. The help heading is built at call time in `HelpText`, and the CI smoke injects `v0.0.0-ci` and checks for it.
+- `internal/graph/status.go`: Graph error and 403 guidance text. Tests assert it exactly.
+- `go.mod`: `go 1.27.2`. Direct deps: azcore/azidentity, msgraph-sdk-go(-core), kiota-http/abstractions, cobra/pflag, google/uuid (scope IDs), x/term.
+- `Taskfile.yml`: dev tasks.
+- `.goreleaser.yaml`: release builds and archives. Validate it with `goreleaser check`. `staticcheck.conf` disables only the error-string style checks.
+- `.github/workflows/`: all workflows use `go-version-file: go.mod`.
+  - `ci.yml`: runs on Linux, macOS and Windows: gofmt, vet, build, test, and a Python binary smoke.
+  - `build.yml`: vet, fmt diff, build, and `goreleaser check`.
+  - `test.yml`: race tests, vet, staticcheck (pinned to a Go-1.27-compatible commit), and govulncheck.
+  - `release.yml`: checks that a build stamped with the tag reports it, runs the quality gates, then GoReleaser.
+- `.gitignore`: ignores `*.txt` (reports may contain plaintext secrets), `/bin/`, `/build/`, `/dist/` and root binaries.
 
 ## Runtime/Tooling Preferences
 
-Use current stable Rust (edition 2024), Cargo, rustfmt, and Clippy. No pinned compiler/MSRV is declared; CI installs stable. HTTP uses reqwest with Rustls. There is no Node/Bun or .NET workflow. Python 3.12 is used by GitHub automation for smoke/version/packaging helpers, not by the application or `cargo test`.
-
-Live operations require Azure CLI 2.54.0+ on PATH and a deliberately selected `az login` identity with Graph permissions. No environment-client-secret fallback or automatic login exists. Help/version avoid authentication, though cold Cargo builds may download dependencies.
+- **Go.** Use Go per `go.mod` (1.27.2; newer local Go downloads it automatically) with Go modules and `go.sum`. Optionally install Task (taskfile.dev). Python 3.12 is used only by CI smoke scripts. Before raising the Go version, check that the pinned staticcheck commit in `test.yml`/`Taskfile.yml` still loads the code.
 
 ## Testing & QA
 
-Rust tests use `#[test]`/`#[tokio::test]`, private SDK executors, loopback HTTP fixtures, and temporary files. Keep tests offline and isolated: do not mutate global PATH, credentials, or working directory; subprocess workers isolate cwd-sensitive cases. Cover behavior and failure boundaries: lookup fallback, scope preservation, pagination safety, lifetime dates, secret-safe errors, and report collisions/permissions/write failures.
-
-CI checks formatting, lint, compilation, build, unit tests, and real-binary smoke; releases add packaging/version guards. Branch protection requires separate configuration; no coverage threshold is set. Local macOS results do not prove Windows/Linux behavior or hosted publication.
-
-For live QA, use README's **Smoke test checklist** only in an explicitly intended test tenant. Start with read-only list; create/expose/delete mutate the tenant and are not routine smoke commands. Never log out or switch the operator's shared Azure session as part of offline verification. Keep reports and captured secret recovery output out of source control/public logs; clean up live smoke registrations deliberately.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 92 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph` and `report`. No coverage threshold.
+- **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
+  - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
+  - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.
+- **App tests.** In-package. `helpers_test.go` provides:
+  - `options(t, args...)`, which goes through the real `cli.Parse`;
+  - `newTestIO`, which uses buffers, `frozenNow` = 2028-02-28T16:30:45Z, and a `t.TempDir()` report directory;
+  - `ok`, `raw` and `decode`.
+- **Auth tests.** Fake `lookPathFunc`/`credentialFunc`. Assert that strings like `private-cli-output-must-not-leak` never appear in errors.
+- **Main tests.** Call `run` directly, with stdin from an `os.Pipe` (not a TTY), stderr as a temp file, and `t.Setenv("PATH", t.TempDir())`.
+- **Exact-output tests.** `TestCreateOutputAndReportAreExact`, `TestListOutputIsExact` and `TestValidationOrderAndMessages` check stdout, report text and validation order byte-for-byte. Update them only when you mean to change behavior.
+- **Platform-specific tests.** `report_unix_test.go` (build tag `unix`) and `report_windows_test.go` (`windows`). The Windows test is compiled locally via `GOOS=windows go vet` but only runs on Windows CI. The report-failure case skips on Windows or when running as root.
+- **Hermeticity.** Keep tests offline. Use only `t.Setenv`/`t.TempDir`; never touch the real Azure session, global cwd or credentials.
+- **Live QA.** Use README's **Smoke test checklist** only in a deliberately chosen test tenant, starting with read-only `list --top 1 --json`. Create, expose and delete mutate the tenant. Keep reports and captured secret output out of git and logs.
