@@ -1,4 +1,4 @@
-name: Rust CI
+name: CI
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Rust checks (${{ matrix.os }})
+  go:
+    name: Go checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -25,35 +25,48 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: .
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - name: Install Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
-          rustup default stable
       - name: Check formatting
-        run: cargo fmt --check
-      - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Check compilation
-        run: cargo check --locked --all-targets
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
       - name: Build
-        run: cargo build --locked
+        run: go build ./...
       - name: Unit tests
-        run: cargo test --locked
+        run: go test ./...
       - name: Smoke CLI binary
         run: |
+          suffix=''
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then suffix='.exe'; fi
+          go build -o "$RUNNER_TEMP/entra-appreg$suffix" ./cmd/entra-appreg
           python - <<'PY'
           import os
+          import re
           import subprocess
           from pathlib import Path
+          version = re.search(r'const Version = "([^"]+)"', Path('internal/cli/version.go').read_text()).group(1)
           suffix = '.exe' if os.name == 'nt' else ''
-          binary = Path('target/debug', 'entra-appreg' + suffix).resolve()
-          subprocess.run([str(binary), '--version'], check=True)
-          subprocess.run([str(binary), '--help'], check=True)
+          binary = Path(os.environ['RUNNER_TEMP'], 'entra-appreg' + suffix).resolve()
+          actual = subprocess.check_output([str(binary), '--version'], text=True).strip()
+          if actual != f'entra-appreg {version}':
+              raise SystemExit(f'Binary version mismatch: {actual!r}')
+          for args in [[], ['create'], ['expose-api'], ['list'], ['delete']]:
+              subprocess.run([str(binary), *args, '--help'], check=True)
+          code = subprocess.run([str(binary), 'list', '--top', '0']).returncode
+          if code != 2:
+              raise SystemExit(f'list --top 0 must exit 2, got {code}')
+          code = subprocess.run([str(binary), 'delete', '--appid', 'x'], stdin=subprocess.DEVNULL).returncode
+          if code != 2:
+              raise SystemExit(f'Non-terminal delete must exit 2, got {code}')
           PY

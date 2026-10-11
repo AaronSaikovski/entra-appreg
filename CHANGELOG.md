@@ -4,6 +4,22 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ## Unreleased
 
+### Added
+
+- The Go module now lives at the repository root, with module path `github.com/AaronSaikovski/entra-appreg`, and the Rust code is deleted. CI, `.gitignore`, README, AGENTS.md and `Taskfile.yml` were updated for this layout. `task check` passed on macOS: gofmt, vet (native and Windows), build, tests, and a smoke of `--version`, `delete --help` and `list --top 0` (exit 2).
+- Go port in `src/go`, now the released binary. It uses Cobra for the CLI, Azure SDK for Go `azidentity.AzureCLICredential` for auth, and `msgraph-sdk-go` for Graph. Messages, ordering, exit codes and report layout match the Rust code. Changes from Rust:
+  - List text output quotes display names, so control characters are escaped.
+  - A missing `keyId` in the `addPassword` reply no longer loses the secret: it is written to the report and the command then exits 1.
+  - Windows reserved device names get a `_` prefix in report filenames.
+  - Next-page links must stay under `/v1.0/`.
+  - Effects of using the typed SDK are listed under README operational limits.
+- Moved Rust to `src/rust` as an unreleased reference, with `[[bin]] path = "main.rs"`. `.gitignore` now ignores `target/` at any depth and the Go build outputs. The Rust review fixes were dropped by user decision.
+- CI has `Go checks` and `Rust checks` jobs on Linux, macOS and Windows; both smoke tests check that non-terminal `delete` exits 2. The user replaced `release.yml` with a GoReleaser workflow and added `build.yml`, `test.yml` and `goreleaser.yml`. Those files were not changed or verified here.
+- Verification on macOS:
+  - Go: `gofmt`, `go vet` (native and `GOOS=windows`), `go build` and `go test ./...` passed in all packages. A real-binary smoke checked version, help precedence, `--name=x`/missing-value rejection, `list --top 0`, non-terminal delete, no-args (exit 2), and missing `az` (exit 1). The Go and Rust CI smoke scripts and `actionlint ci.yml` passed locally.
+  - Rust: fmt, strict Clippy and 55 tests passed in `src/rust`.
+  - Not verified: live Azure, Windows/Linux runs, and the Windows-only reserved-name test (compiled only).
+
 ### Review
 
 - Reviewed the current Rust codebase for modularity and correctness. Existing module split is sound; recommend narrower implementation visibility and shared scope-option membership rather than a framework or wholesale rewrite. Reproduced an outstanding expose-api defect: non-array `identifierUris` is treated as missing and replaced in a PATCH. All 54 tests, formatting, strict Clippy, compilation, debug/release builds, and authentication-free CLI smoke passed on macOS. Review only; production code unchanged, no live Azure calls.

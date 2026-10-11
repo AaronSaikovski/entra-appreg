@@ -1,0 +1,118 @@
+# using - https://taskfile.dev/
+
+version: "3"
+
+#ENV VARS
+env:
+  TARGET: entra-appreg{{exeExt}}
+  APPPATH: ./cmd/entra-appreg
+  PROJECT_NAME: entra-appreg
+  # Version source of truth: internal/cli/version.go
+
+###########################################################################
+
+tasks:
+  ## release - Builds the project in preparation for (local)release
+  release:
+    deps: [lint]
+    cmds:
+      - CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/{{.TARGET}} {{.APPPATH}}
+
+  ###############################################################################
+
+  ## goreleaser - Builds the project in preparation for release
+  goreleaser:
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  ###############################################################################
+
+  ## build - Builds the project in preparation for debug
+  build:
+    cmds:
+      - go build -o bin/$TARGET $APPPATH
+
+  ###############################################################################
+
+  ## run - runs the CLI; pass arguments after --, e.g. `task run -- list --help`
+  run:
+    cmds:
+      - go run $APPPATH {{.CLI_ARGS}}
+
+  ###############################################################################
+
+  ## clean - Remove the old builds and any debug information
+  clean:
+    cmds:
+      - go clean -cache
+      - go clean
+      - rm -rf dist bin
+    platforms: [darwin, linux]
+  clean_windows:
+    silent: true
+    cmds:
+      - cmd /c "rmdir /s /q dist || exit 0"
+      - cmd /c "rmdir /s /q bin || exit 0"
+    platforms: [windows]
+
+  ###############################################################################
+
+  ## test - executes unit tests
+  test:
+    cmds:
+      - go test -v ./...
+
+  ###############################################################################
+
+  ## check - CI quality gates plus an authentication-free binary smoke
+  check:
+    cmds:
+      - test -z "$(gofmt -l .)"
+      - go vet ./...
+      - GOOS=windows go vet ./...
+      - go build ./...
+      - go test ./...
+      - go build -o bin/{{.TARGET}} {{.APPPATH}}
+      - bin/{{.TARGET}} --version
+      - bin/{{.TARGET}} delete --help > /dev/null
+      - "code=0; bin/{{.TARGET}} list --top 0 2>/dev/null || code=$?; test $code -eq 2"
+
+  ###############################################################################
+
+  ## deps - fetches any external dependencies and updates
+  deps:
+    cmds:
+      - go mod tidy
+      - go mod download
+      - go get -u ./...
+
+  ###############################################################################
+
+  ## vet - Vet examines Go source code and reports suspicious constructs
+  vet:
+    cmds:
+      - go vet ./...
+
+  ###############################################################################
+
+  ## staticcheck - Runs static code analyzer staticcheck
+  staticcheck:
+    cmds:
+      - go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+  ###############################################################################
+
+  ## seccheck - Code vulnerability check
+  seccheck:
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  ###############################################################################
+
+  ## lint - format code and tidy modules
+  lint:
+    cmds:
+      - go fmt ./...
+      - go mod tidy -v
+      - go fix ./...
+      #- golangci-lint run ./...
