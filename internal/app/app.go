@@ -20,9 +20,8 @@ type Env struct {
 	ReportDir      string
 }
 
-// Run executes the command selected in opts. tenantID is "" unless the
-// tenant was pinned during authentication.
-func Run(ctx context.Context, opts *cli.Options, g *graph.Client, tenantID string, env Env) error {
+// Run executes the command selected in opts.
+func Run(ctx context.Context, opts *cli.Options, g *graph.Client, env Env) error {
 	switch opts.Command {
 	case cli.CommandExposeAPI:
 		return exposeAPI(ctx, opts, g, env)
@@ -31,7 +30,7 @@ func Run(ctx context.Context, opts *cli.Options, g *graph.Client, tenantID strin
 	case cli.CommandDelete:
 		return deleteApp(ctx, opts, g, env)
 	default:
-		return create(ctx, opts, g, tenantID, env)
+		return create(ctx, opts, g, env)
 	}
 }
 

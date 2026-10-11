@@ -301,6 +301,35 @@ func TestStatusErrorKeepsRawBody(t *testing.T) {
 	}
 }
 
+func TestStatusErrorBodyIsCappedAtOneMiB(t *testing.T) {
+	const limit = 1 << 20
+	for _, tc := range []struct {
+		name      string
+		size      int
+		truncated bool
+	}{
+		{"at cap is kept whole", limit, false},
+		{"over cap is truncated and marked", limit + 4096, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("x", tc.size)
+			f := graphtest.New(t, raw(500, body))
+			err := f.Client(t).DeleteApplication(t.Context(), "object")
+			var status *graph.StatusError
+			if !errors.As(err, &status) {
+				t.Fatalf("got %v, want *graph.StatusError", err)
+			}
+			want := body
+			if tc.truncated {
+				want = body[:limit] + fmt.Sprintf("\n[response body truncated after %d bytes]", limit)
+			}
+			if status.Body != want {
+				t.Fatalf("body length %d, want %d (truncated=%v)", len(status.Body), len(want), tc.truncated)
+			}
+		})
+	}
+}
+
 func TestGenericStatusErrorText(t *testing.T) {
 	f := graphtest.New(t, raw(500, "boom"))
 	err := f.Client(t).DeleteApplication(t.Context(), "object")

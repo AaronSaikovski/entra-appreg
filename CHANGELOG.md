@@ -6,6 +6,18 @@ Notable changes to entra-appreg are recorded here. Unreleased changes have not b
 
 ### Added
 
+- Performance and memory fixes:
+  - **Auth starts Azure CLI once instead of twice.** The `az account show` pre-check is gone. `exec.LookPath` checks that `az` is installed without starting a process, and azidentity's `AzureCLICredential` gets the token for the active context. `create` now takes the report's tenant ID from Graph `/organization` (msgraph-sdk-go, same token) after validation and before the POST, so the recorded tenant always matches the token.
+  - **Auth messages.** Signed-out and expired-token failures now share one fixed message, because azidentity reports them the same way. The invalid-tenant and could-not-run messages no longer apply.
+  - **Graph error bodies are capped at 1 MiB** and marked when truncated, so memory stays bounded.
+  - **Binary size is unchanged** (33.6 MB release). Unused msgraph request builders are already dropped by the linker. The remaining size is msgraph-sdk-go's typed models, which are needed to keep the typed SDK. Build flags are already `-trimpath -s -w`.
+  - **Build cost:** CI already caches Go builds; no change.
+  - **Verification on macOS:**
+    - `task check`, `go test -race ./...` and staticcheck pass.
+    - With a fake `az` that logs each call, `list` and `create` each started exactly one process (`account get-access-token -o json --resource https://graph.microsoft.com`). The fake's stderr never appeared in the output.
+    - With no `az` on `PATH` the output is still `Azure CLI was not found` (exit 1).
+    - New tests cover the org lookup failing before the POST and the body cap.
+    - Real `az` and live Graph were not exercised.
 - Refactored the Go code toward idiomatic Go, per package, with no change in behavior:
   - `cli`: a command table, smaller pre-parse helpers, and one ordered option-group table for validation. The Cobra tree holds only the requested subcommand.
   - `auth`: the deadline is handled in one place, and `runAz` now really discards az stderr. With `nil` a copy was kept inside `*exec.ExitError`, though it was never printed.

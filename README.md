@@ -49,8 +49,8 @@ Running it again creates a second registration. Creation is not idempotent; use 
 
 ## Authentication
 
-- Every Graph command first runs `az account show` to check that you are signed in and that the tenant ID is valid. It then gets one Graph token. The whole sign-in step must finish within 10 seconds.
-- `create` uses the tenant it just checked. `list`, `expose-api` and `delete` use the active Azure CLI context.
+- Each Graph command starts Azure CLI **once**: the SDK runs `az account get-access-token` for the active `az login` context. First the CLI checks that `az` is on `PATH`, without starting it. Sign-in must finish within 10 seconds.
+- The tenant ID shown by `list` and written to `create` reports comes from Microsoft Graph (`/organization`) using the same token, so it always matches the tenant the token was issued for. To work in a different tenant, switch with `az login --tenant <tenant-id>` first.
 - The CLI never signs in for you or reads Azure CLI's token cache. It does not fall back to `AZURE_CLIENT_SECRET` or any other environment credential.
 - Auth error messages are fixed text and never include Azure CLI output or tokens. They go to stderr and the command exits 1, so stdout stays empty for `--json`.
 - Getting a token does not grant permissions. The signed-in identity still needs the right Graph permissions; see [Permissions and 403 errors](#permissions-and-403-errors).
@@ -186,7 +186,7 @@ entra-appreg delete --appid "YOUR_CLIENT_OR_OBJECT_ID"
 | 1 | Sign-in, Graph, file, or confirmation I/O failure. |
 | 2 | Invalid arguments, no arguments, duplicate name, or a non-interactive delete. |
 
-Errors go to stderr. Graph errors include Graph's full response body. Tokens are kept in memory only.
+Errors go to stderr. Graph errors include Graph's response body, capped at 1 MiB; anything longer is cut there and marked as truncated. Tokens are kept in memory only.
 
 ## Limits
 

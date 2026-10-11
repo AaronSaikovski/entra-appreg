@@ -61,10 +61,10 @@ type createdSecret struct {
 }
 
 // create registers a new application. Steps run in a fixed order: optional
-// --appid lookup, input validation, duplicate-name check, POST, scope PATCH,
-// addPassword, report. IDs are printed as soon as the POST succeeds so they
-// survive any later failure.
-func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID string, env Env) error {
+// --appid lookup, input validation, duplicate-name check, tenant lookup, POST,
+// scope PATCH, addPassword, report. IDs are printed as soon as the POST
+// succeeds so they survive any later failure.
+func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	out := env.Stdout
 	if o.AppID != nil && *o.AppID != "no-id" {
 		exists, err := applicationExists(ctx, g, out, *o.AppID)
@@ -77,6 +77,12 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, tenantID strin
 		return err
 	}
 	if err := checkNameAvailable(ctx, g, plan.name); err != nil {
+		return err
+	}
+	// The token and /organization share one credential, so this is exactly
+	// the token's tenant. Read before the POST so a failure mutates nothing.
+	tenantID, _, err := currentTenant(ctx, g)
+	if err != nil {
 		return err
 	}
 	objectID, clientID, err := postApplication(ctx, g, out, plan)

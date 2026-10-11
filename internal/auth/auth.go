@@ -1,20 +1,19 @@
-// Package auth acquires a Microsoft Graph token through the Azure CLI.
+// Package auth acquires a Microsoft Graph token through the Azure CLI. Each
+// command starts exactly one az process: the azidentity AzureCLICredential's
+// token request. The tenant is the active az context's tenant; callers that
+// need its ID read it from Graph with the same token.
 package auth
 
 import (
 	"context"
 	"errors"
-	"io"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/google/uuid"
 
 	"github.com/AaronSaikovski/entra-appreg/internal/graph"
 )
@@ -23,125 +22,71 @@ import (
 // process errors can carry az stderr, account details or tokens, so they are
 // replaced, never wrapped.
 const (
-	msgNotFound      = "Azure CLI was not found. Install Azure CLI 2.54.0 or newer, then run 'az login'."
-	msgCouldNotRun   = "Could not run Azure CLI to check login status. Check your Azure CLI installation and run 'az account show'."
-	msgNoLogin       = "No usable Azure CLI login was found. Run 'az login' (or 'az login --tenant <tenant-id>'), then retry. If already signed in, check 'az account show'."
-	msgInvalidTenant = "Azure CLI returned an invalid tenant ID; expected a UUID."
-	msgInit          = "Could not initialize Azure CLI authentication."
-	msgToken         = "Azure CLI has an account, but could not acquire a Microsoft Graph token. Your session may have expired or require reauthentication. Run 'az login' for the intended tenant, then retry; Azure CLI 2.54.0 or newer is required."
-	msgEmptyToken    = "Azure CLI did not return a nonempty access token."
-	msgTimeout       = "Azure CLI authentication timed out."
+	msgNotFound = "Azure CLI was not found. Install Azure CLI 2.54.0 or newer, then run 'az login'."
+	msgInit     = "Could not initialize Azure CLI authentication."
+	// azidentity reports signed-out and expired sessions with the same
+	// AuthenticationFailedError; telling them apart would mean parsing az
+	// stderr, which must never be surfaced.
+	msgNoToken    = "No usable Azure CLI login could provide a Microsoft Graph token. Run 'az login' (or 'az login --tenant <tenant-id>') for the intended tenant, then retry. If already signed in, check 'az account show'; Azure CLI 2.54.0 or newer is required."
+	msgEmptyToken = "Azure CLI did not return a nonempty access token."
+	msgTimeout    = "Azure CLI authentication timed out."
 )
 
-// authDeadline bounds tenant discovery and token acquisition together.
+// authDeadline bounds the whole authentication, including the az process.
 const authDeadline = 10 * time.Second
 
-// Session carries the acquired credential. TenantID is the discovered tenant
-// when the token was pinned to it, and "" otherwise.
+// Session carries the acquired credential.
 type Session struct {
 	Credential azcore.TokenCredential
-	TenantID   string
 }
 
-// runFunc runs a program and returns its stdout.
-type runFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
+// lookPathFunc locates a program without running it.
+type lookPathFunc func(file string) (string, error)
 
 type credentialFunc func(*azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error)
 
-// Authenticate checks the Azure CLI login and acquires one Graph token, all
-// within authDeadline. With pinTenant the token is requested for the tenant
-// az reports, so the tenant ID that create records matches the token's tenant.
-func Authenticate(ctx context.Context, pinTenant bool) (Session, error) {
-	return authenticateWith(ctx, pinTenant, runAz, newCLICredential, authDeadline)
-}
-
-// runAz returns stdout only. Stderr is discarded rather than left nil,
-// because Output would otherwise capture it into the returned *ExitError.
-func runAz(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	// Bound the wait for pipe copying if az leaves a child holding stdout.
-	cmd.WaitDelay = 100 * time.Millisecond
-	cmd.Stderr = io.Discard
-	return cmd.Output()
+// Authenticate checks that az is installed and acquires one Graph token for
+// the active az context, all within authDeadline.
+func Authenticate(ctx context.Context) (Session, error) {
+	return authenticateWith(ctx, exec.LookPath, newCLICredential, authDeadline)
 }
 
 func newCLICredential(o *azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error) {
 	return azidentity.NewAzureCLICredential(o)
 }
 
-func tenantCommand() (string, []string) {
-	// No user-controlled values enter this command, including on Windows where
-	// Azure CLI is normally installed as az.cmd.
-	args := []string{"account", "show", "--query", "tenantId", "--output", "tsv", "--only-show-errors"}
-	if runtime.GOOS == "windows" {
-		return "cmd.exe", append([]string{"/d", "/c", "az"}, args...)
-	}
-	return "az", args
-}
-
-// currentTenant returns the normalized tenant ID of the active az login.
-func currentTenant(ctx context.Context, run runFunc) (string, error) {
-	name, args := tenantCommand()
-	out, err := run(ctx, name, args...)
-	if err != nil {
-		var exitErr *exec.ExitError
-		switch {
-		case errors.As(err, &exitErr):
-			return "", errors.New(msgNoLogin)
-		case errors.Is(err, exec.ErrNotFound):
-			return "", errors.New(msgNotFound)
-		default:
-			return "", errors.New(msgCouldNotRun)
-		}
-	}
-	// uuid.Parse ignores the outer bytes of the 38-byte "{...}" form, so it
-	// alone would accept non-UTF-8 output.
-	if !utf8.Valid(out) {
-		return "", errors.New(msgInvalidTenant)
-	}
-	id, err := uuid.Parse(strings.TrimSpace(string(out)))
-	if err != nil {
-		return "", errors.New(msgInvalidTenant)
-	}
-	return id.String(), nil
-}
-
-// authenticateWith runs the login check and token request under one deadline.
+// authenticateWith runs the lookup and token request under one deadline.
 // Once the deadline has passed, the result is a timeout whatever the steps
 // returned: a cancelled step fails with its own message, and a token that
 // arrives late is discarded.
-func authenticateWith(ctx context.Context, pinTenant bool, run runFunc, newCred credentialFunc, deadline time.Duration) (Session, error) {
+func authenticateWith(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc, deadline time.Duration) (Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	session, err := acquire(ctx, pinTenant, run, newCred)
+	session, err := acquire(ctx, lookPath, newCred)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return Session{}, errors.New(msgTimeout)
 	}
 	return session, err
 }
 
-// acquire discovers the tenant, then requests a Graph token from az.
-func acquire(ctx context.Context, pinTenant bool, run runFunc, newCred credentialFunc) (Session, error) {
-	tenant, err := currentTenant(ctx, run)
-	if err != nil {
-		return Session{}, err
+// acquire checks for az on PATH (LookPath honors PATHEXT on Windows, so
+// az.cmd is found), then requests a Graph token from az.
+func acquire(ctx context.Context, lookPath lookPathFunc, newCred credentialFunc) (Session, error) {
+	if _, err := lookPath("az"); err != nil {
+		return Session{}, errors.New(msgNotFound)
 	}
-	var opts azidentity.AzureCLICredentialOptions
-	if pinTenant {
-		opts.TenantID = tenant
-	}
-	cred, err := newCred(&opts)
+	cred, err := newCred(&azidentity.AzureCLICredentialOptions{})
 	if err != nil {
 		return Session{}, errors.New(msgInit)
 	}
 	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{graph.Scope}})
 	if err != nil {
-		return Session{}, errors.New(msgToken)
+		return Session{}, errors.New(msgNoToken)
 	}
 	if strings.TrimSpace(token.Token) == "" {
 		return Session{}, errors.New(msgEmptyToken)
 	}
-	return Session{Credential: staticCredential{token: token}, TenantID: opts.TenantID}, nil
+	return Session{Credential: staticCredential{token: token}}, nil
 }
 
 // staticCredential returns the token acquired under the auth deadline.

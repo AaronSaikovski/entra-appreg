@@ -47,6 +47,23 @@ func (e *StatusError) Error() string {
 		fmt.Sprintf("Technical details: %s %s failed with HTTP 403: %s", e.Method, e.Path, e.Body)
 }
 
+// maxErrorBody bounds how much of a non-2xx body is kept. Graph error bodies
+// are a few KB; the cap keeps memory bounded if an endpoint misbehaves.
+const maxErrorBody = 1 << 20
+
+// readErrorBody reads at most maxErrorBody bytes and marks a truncated body,
+// so the kept text is still the raw body up to the cap.
+func readErrorBody(r io.Reader) (string, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxErrorBody+1))
+	if err != nil {
+		return "", err
+	}
+	if len(body) > maxErrorBody {
+		return fmt.Sprintf("%s\n[response body truncated after %d bytes]", body[:maxErrorBody], maxErrorBody), nil
+	}
+	return string(body), nil
+}
+
 // statusHandler turns every non-2xx response into a StatusError carrying the raw
 // body. Because the error is returned from the transport, Kiota never sees the
 // response: 3xx is not followed, the CAE 401 retry never runs, and Kiota's
@@ -62,7 +79,7 @@ func (h *statusHandler) Intercept(p khttp.Pipeline, i int, req *http.Request) (*
 		return resp, err
 	}
 	path := requestPath(req.URL)
-	body, readErr := io.ReadAll(resp.Body)
+	body, readErr := readErrorBody(resp.Body)
 	_ = resp.Body.Close()
 	if readErr != nil {
 		return nil, fmt.Errorf("%s %s HTTP %d: could not read response: %w", req.Method, path, resp.StatusCode, readErr)
@@ -71,7 +88,7 @@ func (h *statusHandler) Intercept(p khttp.Pipeline, i int, req *http.Request) (*
 		Method:           req.Method,
 		Path:             path,
 		Status:           resp.StatusCode,
-		Body:             string(body),
+		Body:             body,
 		applicationsPath: h.applicationsPath,
 	}
 }

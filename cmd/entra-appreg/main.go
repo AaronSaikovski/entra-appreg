@@ -66,7 +66,7 @@ func canConfirm(stdin, stderr *os.File) bool {
 // execute authenticates, then runs the parsed command against Graph.
 func execute(opts *cli.Options, stdin *os.File, stdout io.Writer, stderr *os.File) int {
 	ctx := context.Background()
-	session, err := auth.Authenticate(ctx, opts.Command == cli.CommandCreate)
+	session, err := auth.Authenticate(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "Authentication failed: %v\n", err)
 		return exitFailure
@@ -80,7 +80,7 @@ func execute(opts *cli.Options, stdin *os.File, stdout io.Writer, stderr *os.Fil
 		return fail(stderr, err)
 	}
 	env := app.Env{Stdout: stdout, Stderr: stderr, Stdin: stdin, Now: time.Now, ReportDir: dir}
-	if err := app.Run(ctx, opts, client, session.TenantID, env); err != nil {
+	if err := app.Run(ctx, opts, client, env); err != nil {
 		return fail(stderr, err)
 	}
 	return exitOK

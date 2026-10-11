@@ -15,8 +15,8 @@ Scopes and client secrets are opt-in. The CLI authenticates through the operator
 
 ```
 cmd/entra-appreg.run → cli.Parse → (help/version/no-args exit) → delete TTY gate
-  → auth.Authenticate(pinTenant = create) → graph.New(staticCredential)
-  → app.Run(ctx, opts, client, tenantID, Env) → create | exposeAPI | list | deleteApp → report.Write (create only)
+  → auth.Authenticate → graph.New(staticCredential)
+  → app.Run(ctx, opts, client, Env) → create | exposeAPI | list | deleteApp → report.Write (create only)
 ```
 
 Requests are sequential. The context is `context.Background()`; only auth has an overall deadline.
@@ -29,14 +29,15 @@ Requests are sequential. The context is `context.Background()`; only auth has an
      - A hidden `--help` with no `-h` replaces Cobra's own. A `ran` guard catches cases where no subcommand ran.
   3. **`validate()`** is a switch on the command. Forbidden-option messages come from one ordered table of all options, each tagged with group bits; adding an option means adding one row there.
   - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
-- **`internal/auth`: tenant check, then token.**
-  - Runs `az account show --query tenantId --output tsv --only-show-errors` (`cmd.exe /d /c az` on Windows). The output must be a UUID.
-  - Gets an `AzureCLICredential` token, all under a 10 s deadline. Only `create` pins `TenantID`.
+- **`internal/auth`: one `az` process per command.**
+  - `exec.LookPath("az")` checks the install without starting a process (on Windows, PATHEXT finds `az.cmd`). If `az` is missing, the error is the "not found" message.
+  - `AzureCLICredential` with empty options requests the token for the active az context, under a 10 s deadline. There is no `az account show` pre-check and no tenant pinning. Each Python `az` start costs about a second, so don't add a second `az` call.
   - Returns a `staticCredential` whose `String`/`GoString` are redacted, so Graph calls never start `az` again.
-  - Error messages are fixed constants. Never wrap SDK errors; they carry `az` stderr. `runAz` sets `cmd.Stderr = io.Discard`; `nil` would keep a copy of stderr inside `*exec.ExitError`.
+  - Error messages are fixed constants. Any `GetToken` failure maps to the one `msgNoToken` message: azidentity reports signed-out and expired sessions the same way, and its text carries `az` stderr, so never wrap it.
+- **Tenant ID** comes from Graph `/organization` through the same token (`currentTenant` in `list.go`, which requires exactly one org). `create` calls it after validation and the name check, before the POST, so the reported tenant is exactly the token's tenant.
 - **`internal/graph`: `msgraph-sdk-go` on a hardened transport.**
   - Kiota transport with only `ParametersNameDecodingHandler` and `statusHandler`: no retry, redirect or compression. `http.Client` has a 10 s timeout and returns `ErrUseLastResponse` instead of following redirects.
-  - `statusHandler` turns every non-2xx response into `*StatusError` carrying the raw body. The 403 guidance and the `Application.Read.All` hint (GET `/applications` only) live in `status.go`.
+  - `statusHandler` turns every non-2xx response into `*StatusError` carrying the raw body, capped at 1 MiB (`maxErrorBody`). A longer body is cut at the cap and marked as truncated. The 403 guidance and the `Application.Read.All` hint (GET `/applications` only) live in `status.go`.
   - `describe()` wraps all other failures.
   - `GetApplication` tries the object ID first, then the `appId` alternate key, but only after a 404. Two 404s return `(nil, nil)`.
   - `ApplicationPages` rejects repeated next links. `validateNextLink` requires the same scheme, host and port, no userinfo or fragment, and a path under `/v1.0/`. `internal/graph/export_test.go` exposes unexported helpers to the external `graph_test` package.
@@ -107,7 +108,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 - **Case-insensitive matching.** Use `cli.EqualFoldASCII` for audience, consent, state, `all`/`custom`, redirect scheme and duplicate scope names.
 - **Injection seams.** Use only these; no DI framework:
   - `app.Env{Stdout, Stderr, Stdin, Now, ReportDir}`
-  - `auth.authenticateWith(ctx, pin, runFunc, credentialFunc, deadline)`
+  - `auth.authenticateWith(ctx, lookPathFunc, credentialFunc, deadline)`
   - `graph.NewForBase`
 - **Go version.** The code uses Go 1.26+ `new(expr)` for pointers (e.g. `new(int32(1))`). Keep this rather than adding `ptr` helpers.
 - **Secrets.**
@@ -148,7 +149,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
   - `options(t, args...)`, which goes through the real `cli.Parse`;
   - `newTestIO`, which uses buffers, `frozenNow` = 2028-02-28T16:30:45Z, and a `t.TempDir()` report directory;
   - `ok`, `raw` and `decode`.
-- **Auth tests.** Fake `runFunc`/`credentialFunc`. Assert that strings like `private-cli-output-must-not-leak` never appear in errors.
+- **Auth tests.** Fake `lookPathFunc`/`credentialFunc`. Assert that strings like `private-cli-output-must-not-leak` never appear in errors.
 - **Main tests.** Call `run` directly, with stdin from an `os.Pipe` (not a TTY), stderr as a temp file, and `t.Setenv("PATH", t.TempDir())`.
 - **Exact-output tests.** `TestCreateOutputAndReportAreExact`, `TestListOutputIsExact` and `TestValidationOrderAndMessages` check stdout, report text and validation order byte-for-byte. Update them only when you mean to change behavior.
 - **Platform-specific tests.** `report_unix_test.go` (build tag `unix`) and `report_windows_test.go` (`windows`). The Windows test is compiled locally via `GOOS=windows go vet` but only runs on Windows CI. The report-failure case skips on Windows or when running as root.

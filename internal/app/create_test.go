@@ -75,6 +75,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			}
 			responses := []graphtest.Response{
 				ok(obj{"value": arr{}}),
+				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 			}
 			switch scenario {
@@ -86,13 +87,14 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				responses = append(responses, raw(204, ""), ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}))
 			}
 			f := graphtest.New(t, responses...)
-			err := create(context.Background(), options(t, workflowArgs...), f.Client(t), "tenant", tio.env)
+			err := create(context.Background(), options(t, workflowArgs...), f.Client(t), tio.env)
 
 			requests := f.Requests()
-			if requests[0].Method != "GET" {
-				t.Fatalf("first request %s, want the name check", requests[0].Method)
+			if requests[0].Method != "GET" || requests[0].Path != "/v1.0/applications" {
+				t.Fatalf("first request %s %s, want the name check", requests[0].Method, requests[0].Path)
 			}
-			requests = requests[1:]
+			assertOrgRequest(t, requests[1])
+			requests = requests[2:]
 			if requests[0].Method != "POST" || requests[0].Path != "/v1.0/applications" {
 				t.Fatalf("request = %s %s", requests[0].Method, requests[0].Path)
 			}
@@ -211,19 +213,20 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 }
 
 func TestCreateWithoutRedirectsSendsEmptyRedirectList(t *testing.T) {
-	f := graphtest.New(t, ok(obj{"value": arr{}}), raw(403, "creation-denied"))
-	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+	f := graphtest.New(t, ok(obj{"value": arr{}}), org, raw(403, "creation-denied"))
+	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
 	if err == nil || !strings.Contains(err.Error(), "creation-denied") {
 		t.Fatalf("err = %v", err)
 	}
 	requests := f.Requests()
-	if len(requests) != 2 || requests[1].Method != "POST" || requests[1].Path != "/v1.0/applications" {
+	if len(requests) != 3 || requests[2].Method != "POST" || requests[2].Path != "/v1.0/applications" {
 		t.Fatalf("requests = %+v", requests)
 	}
-	if !strings.Contains(string(requests[1].Body), `"redirectUris":[]`) {
-		t.Errorf("body = %s", requests[1].Body)
+	assertOrgRequest(t, requests[1])
+	if !strings.Contains(string(requests[2].Body), `"redirectUris":[]`) {
+		t.Errorf("body = %s", requests[2].Body)
 	}
-	if got := decode(t, requests[1])["spa"].(obj)["redirectUris"]; !reflect.DeepEqual(got, arr{}) {
+	if got := decode(t, requests[2])["spa"].(obj)["redirectUris"]; !reflect.DeepEqual(got, arr{}) {
 		t.Errorf("redirectUris = %v", got)
 	}
 }
@@ -240,7 +243,7 @@ func TestCreateBlocksDuplicateNamesAndFailedChecks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, tc.reply)
-			err := create(context.Background(), options(t, "--name", "O'Brien & Co"), f.Client(t), "tenant", newTestIO(t, "").env)
+			err := create(context.Background(), options(t, "--name", "O'Brien & Co"), f.Client(t), newTestIO(t, "").env)
 			if err == nil {
 				t.Fatal("created")
 			}
@@ -267,7 +270,7 @@ func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
 		f := graphtest.New(t,
 			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
 			ok(obj{"value": arr{obj{"id": "existing"}}}))
-		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
 		if !isUsage(err) {
 			t.Fatalf("err = %v, want a usage error", err)
 		}
@@ -281,7 +284,7 @@ func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
 		f := graphtest.New(t,
 			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
 			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}))
-		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
 		if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
 			t.Fatalf("err = %v", err)
 		}
@@ -308,7 +311,7 @@ func TestAudienceMatchesCaseInsensitivelyAndReturnsCanonicalSpelling(t *testing.
 func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 	tio := newTestIO(t, "")
 	f := graphtest.New(t, ok(obj{"id": "object", "appId": "client"}))
-	if err := create(context.Background(), options(t, "--appid", "existing", "--name", "App"), f.Client(t), "tenant", tio.env); err != nil {
+	if err := create(context.Background(), options(t, "--appid", "existing", "--name", "App"), f.Client(t), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.Requests()); n != 1 {
@@ -321,15 +324,16 @@ func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 		t.Errorf("stdout = %q", tio.stdout.String())
 	}
 
-	f = graphtest.New(t, raw(404, "missing"), raw(404, "missing"), ok(obj{"value": arr{}}), raw(403, "creation-denied"))
-	err := create(context.Background(), options(t, "--appid", "missing", "--name", "App"), f.Client(t), "tenant", newTestIO(t, "").env)
+	f = graphtest.New(t, raw(404, "missing"), raw(404, "missing"), ok(obj{"value": arr{}}), org, raw(403, "creation-denied"))
+	err := create(context.Background(), options(t, "--appid", "missing", "--name", "App"), f.Client(t), newTestIO(t, "").env)
 	if err == nil || !strings.Contains(err.Error(), "creation-denied") {
 		t.Fatalf("err = %v", err)
 	}
 	requests := f.Requests()
-	if len(requests) != 4 || requests[3].Method != "POST" || requests[3].Path != "/v1.0/applications" {
+	if len(requests) != 5 || requests[4].Method != "POST" || requests[4].Path != "/v1.0/applications" {
 		t.Fatalf("requests = %+v", requests)
 	}
+	assertOrgRequest(t, requests[3])
 }
 
 // TestCreateOutputAndReportAreExact pins every printed line and the report
@@ -347,6 +351,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			args: workflowArgs,
 			responses: []graphtest.Response{
 				ok(obj{"value": arr{}}),
+				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				raw(204, ""),
 				ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}),
@@ -388,6 +393,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			args: []string{"--name", "App"},
 			responses: []graphtest.Response{
 				ok(obj{"value": arr{}}),
+				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 			},
 			wantStdout: "Creating application registration 'App'\n" +
@@ -409,6 +415,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			args: []string{"--name", "App", "--create-secret", "--secret-start", "1/3/2028", "--secret-end", "2/3/2028"},
 			responses: []graphtest.Response{
 				ok(obj{"value": arr{}}),
+				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				ok(obj{
 					"keyId": keyID, "secretText": "fake-one-time-secret",
@@ -439,7 +446,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tio := newTestIO(t, "")
 			f := graphtest.New(t, tc.responses...)
-			if err := create(context.Background(), options(t, tc.args...), f.Client(t), "tenant", tio.env); err != nil {
+			if err := create(context.Background(), options(t, tc.args...), f.Client(t), tio.env); err != nil {
 				t.Fatal(err)
 			}
 			reportPath := filepath.Join(tio.env.ReportDir, "App.txt")
@@ -450,8 +457,8 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 				t.Errorf("stderr = %q", tio.stderr.String())
 			}
 			scopeID := ""
-			if requests := f.Requests(); len(requests) > 2 && requests[2].Method == "PATCH" {
-				scopeID, _ = decode(t, requests[2])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
+			if requests := f.Requests(); len(requests) > 3 && requests[3].Method == "PATCH" {
+				scopeID, _ = decode(t, requests[3])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)
 			}
 			if got, want := readReport(t, reportPath), strings.ReplaceAll(tc.wantReport, "{scope}", scopeID); got != want {
 				t.Errorf("report:\n got %q\nwant %q", got, want)
@@ -480,13 +487,47 @@ func TestCreateValidatesInOrderBeforeAnyRequest(t *testing.T) {
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			f := graphtest.New(t)
-			err := create(context.Background(), options(t, tc.args...), f.Client(t), "tenant", newTestIO(t, "").env)
+			err := create(context.Background(), options(t, tc.args...), f.Client(t), newTestIO(t, "").env)
 			usage, ok := errors.AsType[*cli.UsageError](err)
 			if !ok || usage.Message != tc.want {
 				t.Errorf("err = %v, want usage error %q", err, tc.want)
 			}
 			if n := len(f.Requests()); n != 0 {
 				t.Errorf("%d requests, want 0", n)
+			}
+		})
+	}
+}
+
+// org is the /organization reply create reads the tenant ID from.
+var org = ok(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
+
+func assertOrgRequest(t *testing.T, r graphtest.Request) {
+	t.Helper()
+	if r.Method != "GET" || r.Path != "/v1.0/organization" || r.RawQuery != "%24select=id,displayName" && r.RawQuery != "$select=id,displayName" {
+		t.Fatalf("request = %s %s?%s, want the organization lookup", r.Method, r.Path, r.RawQuery)
+	}
+}
+
+func TestCreateTenantLookupFailureStopsBeforePost(t *testing.T) {
+	for name, reply := range map[string]graphtest.Response{
+		"forbidden": raw(403, "org-denied"),
+		"empty":     ok(obj{"value": arr{}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			tio := newTestIO(t, "")
+			f := graphtest.New(t, ok(obj{"value": arr{}}), reply)
+			if err := create(context.Background(), options(t, "--name", "App"), f.Client(t), tio.env); err == nil {
+				t.Fatal("created")
+			}
+			requests := f.Requests()
+			if len(requests) != 2 {
+				t.Fatalf("requests = %+v", requests)
+			}
+			assertOrgRequest(t, requests[1])
+			assertNoMethod(t, requests, "POST")
+			if n := dirEntries(t, tio.env.ReportDir); n != 0 {
+				t.Errorf("%d files written", n)
 			}
 		})
 	}
