@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -121,10 +122,90 @@ func TestParamsFileIsNotReadForHelpOrVersion(t *testing.T) {
 	expectVersion(t, "--params-file", missing, "--version")
 }
 
-// The shipped sample must stay a valid create input.
-func TestSampleParamsFileParses(t *testing.T) {
-	o := mustRun(t, "create", "--params-file", filepath.Join("..", "..", "examples", "spa.params.json"))
-	if deref(o.Name) != "My SPA" || deref(o.ScopeName) != "access_as_user" || len(o.RedirectURIs) != 2 {
-		t.Errorf("sample options = name %v, scope %v, redirects %q", deref(o.Name), deref(o.ScopeName), o.RedirectURIs)
+func samplePath(name string) string { return filepath.Join("..", "..", "examples", name) }
+
+// sampleFields is every text option a sample can set, keyed by its file key;
+// absent options are nil.
+func sampleFields(o *Options) map[string]any {
+	return map[string]any{
+		"appid": deref(o.AppID), "name": deref(o.Name), "audience": deref(o.Audience),
+		"scope-name": deref(o.ScopeName), "scope-consent": deref(o.ScopeConsent),
+		"scope-display-name": deref(o.ScopeDisplayName), "scope-description": deref(o.ScopeDescription),
+		"scope-user-display-name": deref(o.ScopeUserDisplayName), "scope-user-description": deref(o.ScopeUserDescription),
+		"scope-state": deref(o.ScopeState), "secret-expiry": deref(o.SecretExpiry),
+		"secret-start": deref(o.SecretStart), "secret-end": deref(o.SecretEnd),
+		"keyvault-uri": deref(o.KeyVaultURI), "keyvault-secret-name": deref(o.KeyVaultSecretName),
+	}
+}
+
+// The shipped samples must stay valid create inputs with exactly the values
+// README and help describe: an API registration (scope, secret in Key Vault,
+// no redirects) and a SPA (redirects only, no scope, no secret).
+func TestSampleParamsFilesParse(t *testing.T) {
+	cases := []struct {
+		file      string
+		fields    map[string]any
+		redirects []string
+		secret    bool
+	}{
+		{
+			file: "api.params.json",
+			fields: map[string]any{
+				"name": "my-api-dev", "audience": "AzureADMyOrg",
+				"scope-name": "access_as_user", "scope-consent": "admins",
+				"scope-display-name": "Access My API as the signed-in user",
+				"scope-description":  "Allow the application to access My API on behalf of the signed-in user.",
+				"scope-state":        "enabled", "secret-expiry": "365",
+				"keyvault-uri": "https://my-vault.vault.azure.net", "keyvault-secret-name": "GraphClientSecret",
+			},
+			secret: true,
+		},
+		{
+			file:      "spa.params.json",
+			fields:    map[string]any{"name": "my-web-dev", "audience": "AzureADMyOrg"},
+			redirects: []string{"https://dev.example.com", "https://www.dev.example.com", "https://dev.example.com/auth/callback"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			o := mustRun(t, "create", "--params-file", samplePath(c.file))
+			for key, got := range sampleFields(o) {
+				want, set := c.fields[key]
+				if !set {
+					want = nil
+				}
+				if got != want {
+					t.Errorf("%s = %v, want %v", key, got, want)
+				}
+			}
+			if !reflect.DeepEqual(o.RedirectURIs, c.redirects) || o.RedirectsSupplied != (c.redirects != nil) {
+				t.Errorf("redirects = %q (supplied %v), want %q", o.RedirectURIs, o.RedirectsSupplied, c.redirects)
+			}
+			if o.CreateSecret != c.secret {
+				t.Errorf("create-secret = %v, want %v", o.CreateSecret, c.secret)
+			}
+		})
+	}
+}
+
+// Copying a sample per environment relies on the command line replacing
+// file values, with redirect lists replaced rather than merged.
+func TestSampleParamsFileCommandLineOverrides(t *testing.T) {
+	o := mustRun(t, "create", "--params-file", samplePath("spa.params.json"),
+		"--name", "my-web-uat", "--redirect-urls", "https://uat.example.com/auth/callback")
+	if deref(o.Name) != "my-web-uat" || deref(o.Audience) != "AzureADMyOrg" {
+		t.Errorf("name = %v, audience = %v", deref(o.Name), deref(o.Audience))
+	}
+	if want := []string{"https://uat.example.com/auth/callback"}; !reflect.DeepEqual(o.RedirectURIs, want) {
+		t.Errorf("redirects = %q, want %q", o.RedirectURIs, want)
+	}
+}
+
+// The SPA sample carries create-only options, so other commands refuse it.
+func TestSampleParamsFileObeysCommandRules(t *testing.T) {
+	_, err := Parse([]string{"list", "--params-file", samplePath("spa.params.json")})
+	var usage *UsageError
+	if !errors.As(err, &usage) || !strings.Contains(err.Error(), "can't be used with the list command") {
+		t.Errorf("err = %v, want a list usage error", err)
 	}
 }

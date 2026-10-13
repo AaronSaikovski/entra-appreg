@@ -27,7 +27,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
      - `optionalString` rejects values starting with `--`.
      - `redirectList` accumulates values; `--redirect-url` is normalized to `--redirect-urls`.
      - A hidden `--help` with no `-h` replaces Cobra's own. A `ran` guard catches cases where no subcommand ran.
-  2b. **`--params-file`** (`params.go`). `applyParamsFile` runs after Cobra and before `validate()`. It decodes one JSON object (cap 1 MiB) into `map[string]json.RawMessage` and fills only options still unset; command-line redirects replace the file list. Keys are option names without `--`, checked in sorted order; unknown keys, wrong types and trailing values are usage errors. `--params-file` has no option group, so every command accepts it, and file-supplied options hit the same group rules. Adding a text option means adding a `paramsTargets` row too. The sample `examples/spa.params.json` is parsed by `TestSampleParamsFileParses`.
+  2b. **`--params-file`** (`params.go`). `applyParamsFile` runs after Cobra and before `validate()`. A file is read only when `--params-file` is given; there is no default file. It decodes one JSON object (cap 1 MiB) into `map[string]json.RawMessage` and fills only options still unset; command-line redirects replace the file list. Keys are option names without `--`, checked in sorted order; unknown keys, wrong types and trailing values are usage errors. `--params-file` has no option group, so every command accepts it, and file-supplied options hit the same group rules. Adding a text option means adding a `paramsTargets` row too, and a key in `sampleFields` (`params_test.go`). The samples in `examples/` are pinned by three tests: `TestSampleParamsFilesParse` (every option value exact), `TestSampleParamsFileCommandLineOverrides` and `TestSampleParamsFileObeysCommandRules`. Editing a sample means updating its expected values there and the README snippets.
   3. **`validate()`** is a switch on the command. Forbidden-option messages come from one ordered table of all options, each tagged with group bits; adding an option means adding one row there.
   - Creation fields are validated later, in `app.create`, after the `--appid` lookup. An existing ID is therefore a no-op with exit 0.
 - **`internal/auth`: one `az` process per command.**
@@ -75,7 +75,7 @@ Requests are sequential. The context is `context.Background()`; only auth has an
 | `internal/app/` | Workflows plus `scope.go`/`lifetime.go` rules. |
 | `internal/report/` | Report writer; platform files `report_windows.go`/`report_other.go`. |
 | `internal/keyvault/` | `azsecrets` (Azure SDK for Go) wrapper: `ParseVaultURI` (public `*.vault.azure.net` only), `ValidSecretName`, `Client.SetSecret`. The SDK pipeline runs with `MaxRetries: -1` on a 10 s, no-redirect `http.Client`; the challenge-resource check stays on. Tests use `newClient` with a TLS loopback server that sends Key Vault's 401 challenge, with verification disabled. Errors add 401/403/409 guidance and never include the secret. |
-| `examples/` | `spa.params.json`, the sample `--params-file`; a cli test parses it. |
+| `examples/` | `api.params.json` (API registration: scope, secret in Key Vault, no redirects) and `spa.params.json` (SPA: three redirects including `/auth/callback`, no scope, no secret), the sample `--params-file` inputs for `create`. Values are pinned by `TestSampleParamsFilesParse`. |
 
 ## Development Commands
 
@@ -146,7 +146,7 @@ bin/entra-appreg delete --appid x </dev/null   # must exit 2 (TTY gate)
 
 ## Testing & QA
 
-- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 111 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph`, `keyvault` and `report`. No coverage threshold.
+- **Framework.** Standard `testing` only: no testify, mocks, golden files or `testdata/`. There are 114 top-level tests across `cmd/entra-appreg`, `app`, `auth`, `cli`, `graph`, `keyvault` and `report`. No coverage threshold.
 - **Graph tests.** `graphtest.New(t, graphtest.JSON(200, v), …)` queues replies in order. `{base}` in a reply body becomes the fixture URL, for next-page links. An unexpected request returns 500 and fails the test.
   - Assert on `f.Requests()`: method, escaped path, query, `Authorization: Bearer fake-token`, and body. Use `url.ParseQuery` for `$filter`.
   - `graph_test.go` is `package graph_test` (external), to avoid an import cycle with `graphtest`.
@@ -167,7 +167,6 @@ README **SPA readiness and known gaps** is the source of truth; keep it in sync 
 
 1. No live-tenant verification yet. Self-referencing `requiredResourceAccess` in the scope PATCH and SP creation right after the POST are unconfirmed.
 2. No command to add redirect URIs to an existing app. If added, rebuild the `spa` body from fresh models and keep existing URIs (backing-store rule).
-3. `requestedAccessTokenVersion` is only set for personal-account audiences, so own-API tokens are v1 otherwise. A likely fix is to set 2 whenever `create` exposes a scope; this changes the POST/PATCH bodies and the exact-output tests.
-4. `validRedirect` accepts `http` for any host; restricting it to `localhost`/`127.0.0.1` would change `TestValidationOrderAndMessages`-style expectations.
-5. `expose-api` leaves `requiredResourceAccess` untouched (unlike `create`).
-6. Admin consent (`oauth2PermissionGrants`) is deliberately out of scope: it needs privileged roles.
+3. `validRedirect` accepts `http` for any host; restricting it to `localhost`/`127.0.0.1` would change `TestValidationOrderAndMessages`-style expectations.
+4. `expose-api` leaves `requiredResourceAccess` untouched (unlike `create`).
+5. Admin consent (`oauth2PermissionGrants`) is deliberately out of scope: it needs privileged roles.

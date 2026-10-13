@@ -50,6 +50,8 @@ func exposeAPI(ctx context.Context, o *cli.Options, g *graph.Client, env Env) er
 	api.SetOauth2PermissionScopes(append(api.GetOauth2PermissionScopes(), buildScope(scopeID, spec)))
 	patch := models.NewApplication()
 	patch.SetApi(api)
+	api.SetRequestedAccessTokenVersion(new(int32(2)))
+	patch.SetOptionalClaims(withAuthTime(app.GetOptionalClaims()))
 	if existingURI == "" {
 		patch.SetIdentifierUris([]string{identifier})
 	}
@@ -88,6 +90,88 @@ func firstIdentifierURI(uris []string) string {
 		}
 	}
 	return ""
+}
+
+// authTimeClaim is the access-token optional claim every exposed API gets.
+const authTimeClaim = "auth_time"
+
+// withAuthTime returns fresh optionalClaims models copied from fetched (nil
+// for a new registration) with auth_time added to the access-token claims
+// when absent. A PATCH replaces the whole object, so the id and SAML claim
+// lists are resent as fetched, and empty lists are sent rather than omitted.
+func withAuthTime(fetched models.OptionalClaimsable) models.OptionalClaimsable {
+	claims := models.NewOptionalClaims()
+	var access, id, saml []models.OptionalClaimable
+	if fetched != nil {
+		access = copyClaims(fetched.GetAccessToken())
+		id = copyClaims(fetched.GetIdToken())
+		saml = copyClaims(fetched.GetSaml2Token())
+		if v := fetched.GetOdataType(); v != nil {
+			claims.SetOdataType(v)
+		}
+		if v := fetched.GetAdditionalData(); v != nil {
+			claims.SetAdditionalData(maps.Clone(v))
+		}
+	}
+	present := false
+	for _, c := range access {
+		if deref(c.GetName(), "") == authTimeClaim && c.GetSource() == nil {
+			present = true
+		}
+	}
+	if !present {
+		c := models.NewOptionalClaim()
+		c.SetName(new(authTimeClaim))
+		c.SetEssential(new(false))
+		c.SetAdditionalProperties([]string{})
+		access = append(access, c)
+	}
+	claims.SetAccessToken(access)
+	claims.SetIdToken(nonNilClaims(id))
+	claims.SetSaml2Token(nonNilClaims(saml))
+	return claims
+}
+
+func nonNilClaims(c []models.OptionalClaimable) []models.OptionalClaimable {
+	if c == nil {
+		return []models.OptionalClaimable{}
+	}
+	return c
+}
+
+// copyClaims copies fetched optional claims into fresh models, dropping nil
+// entries (backing-store rule, see copyAPI).
+func copyClaims(fetched []models.OptionalClaimable) []models.OptionalClaimable {
+	if fetched == nil {
+		return nil
+	}
+	copied := make([]models.OptionalClaimable, 0, len(fetched))
+	for _, f := range fetched {
+		if f == nil {
+			continue
+		}
+		c := models.NewOptionalClaim()
+		if v := f.GetName(); v != nil {
+			c.SetName(v)
+		}
+		if v := f.GetSource(); v != nil {
+			c.SetSource(v)
+		}
+		if v := f.GetEssential(); v != nil {
+			c.SetEssential(v)
+		}
+		if v := f.GetAdditionalProperties(); v != nil {
+			c.SetAdditionalProperties(v)
+		}
+		if v := f.GetOdataType(); v != nil {
+			c.SetOdataType(v)
+		}
+		if v := f.GetAdditionalData(); v != nil {
+			c.SetAdditionalData(maps.Clone(v))
+		}
+		copied = append(copied, c)
+	}
+	return copied
 }
 
 // copyAPI copies a fetched api object into fresh models. The backing store

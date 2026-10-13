@@ -47,11 +47,18 @@ entra-appreg create --name "My SPA" --redirect-urls http://localhost:5173/auth/c
 
 Running it again creates a second registration. Creation is not idempotent; use `--appid` to refer to an existing app.
 
-To keep the settings in a file, use the sample [`examples/spa.params.json`](examples/spa.params.json); see [Parameters file](#parameters-file):
+To keep the settings in a file, use the samples in [`examples/`](examples/); see [Parameters file](#parameters-file). A browser app that calls its own API needs two registrations, and the API comes first:
 
 ```sh
+# 1. API registration: no redirect URIs, admins-only access_as_user scope, v2 access
+#    tokens with auth_time, and a server-side client secret stored in Key Vault
+entra-appreg create --params-file examples/api.params.json
+
+# 2. SPA registration: redirect URIs only, no scope and no secret (a public client)
 entra-appreg create --params-file examples/spa.params.json
 ```
+
+Copy the samples and change `name`, the redirect URIs and the vault first. Then, in the portal, give the SPA's **API permissions** `My APIs → <api> → access_as_user` and grant admin consent; `create` doesn't link the two registrations.
 
 ## Authentication
 
@@ -76,22 +83,23 @@ entra-appreg create --help      # also: expose-api, list, delete
 
 ### Parameters file
 
-Every command accepts `--params-file <file.json>`. The file holds one JSON object; its keys are the long option names without `--`. A sample for `create` is in [`examples/spa.params.json`](examples/spa.params.json):
+Every command accepts `--params-file <file.json>`. The file holds one JSON object; its keys are the long option names without `--`. The samples are both `create` inputs: [`examples/api.params.json`](examples/api.params.json) for the API registration and [`examples/spa.params.json`](examples/spa.params.json) for the SPA:
 
 ```json
 {
-  "name": "My SPA",
-  "redirect-urls": ["http://localhost:5173/auth/callback", "https://myapp.example.com/auth/callback"],
-  "scope-name": "access_as_user",
-  "scope-consent": "users"
+  "name": "my-web-dev",
+  "audience": "AzureADMyOrg",
+  "redirect-urls": ["https://dev.example.com", "https://www.dev.example.com", "https://dev.example.com/auth/callback"]
 }
 ```
 
+- **Only when asked.** A file is read only when you pass `--params-file`; there is no default file, and the samples in `examples/` are never loaded on their own.
 - **Command line wins.** An option given on the command line replaces the file's value. For `redirect-urls`, command-line values replace the file's whole list; they are not merged.
 - **Same rules.** File values are checked exactly like command-line ones, including which options a command accepts. For example, `top` in a file used with `create` exits 2.
 - **Types.** Text options take JSON strings. `redirect-urls` takes an array of strings or one comma-separated string. `create-secret` and `json` take `true`/`false`; `false` is the same as leaving the key out. `top` and `secret-expiry` also accept whole numbers (`"top": 10`). `null` counts as absent.
 - **Strict.** Unknown keys (including the `redirect-url` alias and a nested `params-file`), wrong types, invalid JSON, more than one top-level value, or a file over 1 MiB exit 2 before sign-in. Help and version never read the file.
 - The path is relative to the current directory. Don't put secrets in the file; no option takes one.
+- **Samples are tested.** `go test ./internal/cli` loads both samples through the real parser and checks every value, the command-line override, and that `list` rejects the SPA sample. If you edit a sample in the repo, update `TestSampleParamsFilesParse`; edit a copy to keep your own values.
 
 ### create
 
@@ -121,6 +129,7 @@ Validation runs in this order:
 - **Lookup first.** Name, redirect, scope and secret options are checked only after sign-in and any `--appid` lookup, so an existing app needs no other options. A lookup failure other than 404 never falls through to creation.
 - **Duplicate names.** Before creating, `create` checks Graph for an app with the same `displayName`. A match stops the command with exit 2.
 - **Personal accounts.** Audiences that include personal accounts request access-token version 2.
+- **Exposed APIs.** Whenever a registration exposes a scope (`create --scope-name`, `expose-api`), the scope PATCH sets `api.requestedAccessTokenVersion` to 2 and adds the access-token optional claim `auth_time` (`essential: false`). Access tokens belong to the resource they are issued for, so both go on the API registration itself. A `create` without a scope sets neither. `expose-api` keeps existing optional claims and doesn't add `auth_time` twice.
 - **Secret dates.** Giving a date without `--secret-expiry` implies `custom`. Don't combine dates with a numeric preset. A future start date is midnight UTC; a start of today is not sent to Graph. Tenant policy may cap the lifetime further.
 
 #### Single-page app setup
@@ -144,7 +153,6 @@ For a new single-tenant SPA, `create` sets every registration setting that MSAL.
 |---|---|---|
 | Not yet verified against a live tenant | All Graph calls are tested only against a local fake. Not yet confirmed: Graph accepting the app's own scope in `requiredResourceAccess` in the same PATCH that defines it, and service principal creation right after the app. | Run the [smoke test checklist](#smoke-test-checklist) in a test tenant. |
 | Redirect URIs can't be changed after creation | Production URLs added later need the portal. | Entra admin center → **Authentication**. |
-| v1 access tokens for the app's own API | With `AzureADMyOrg`/`AzureADMultipleOrgs`, `requestedAccessTokenVersion` is not set, so `api://<client-id>/…` tokens are v1 (issuer `https://sts.windows.net/<tenant>/`). Backends expecting v2 issuers reject them. Sign-in and Graph calls are unaffected. | Set **Manifest → `requestedAccessTokenVersion`: 2**, or accept v1 issuers in the API. |
 | No admin consent grant | Tenants that block user consent, and admins-only scopes (the default), need an admin before users can sign in. | **Grant admin consent** in the portal. |
 | Loose redirect validation | Any `http://` host is accepted locally. Entra is expected to allow plain `http` only for localhost, so such URIs fail at Graph or sign-in instead of exiting 2. | Use `https` except for `localhost`. |
 | `expose-api` doesn't update `requiredResourceAccess` | Admin consent on an existing app doesn't cover the new scope. | Add it under **API permissions → My APIs**. |
@@ -152,14 +160,17 @@ For a new single-tenant SPA, `create` sets every registration setting that MSAL.
 Examples:
 
 ```sh
-# Scope with user consent, no secret
-entra-appreg create --name "My SPA" --redirect-urls "http://localhost:5173/auth/callback,https://example.com/auth/callback" --scope-name access_as_user --scope-consent users
+# API registration: admins-only scope (sets v2 tokens and auth_time), secret only in Key Vault
+entra-appreg create --name my-api-dev --scope-name access_as_user --scope-consent admins --create-secret --secret-expiry 365 --keyvault-uri https://my-vault.vault.azure.net --keyvault-secret-name GraphClientSecret
 
-# Client secret stored only in Key Vault (the report records its Key Vault ID, not the value)
-entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --keyvault-uri https://my-vault.vault.azure.net --keyvault-secret-name backend-client-secret
+# SPA registration that calls that API: redirects only, no scope, no secret
+entra-appreg create --name my-web-dev --redirect-urls "https://dev.example.com,https://www.dev.example.com,https://dev.example.com/auth/callback"
 
 # Client secret (the report contains it in plaintext)
-entra-appreg create --name "Backend client" --redirect-urls https://example.com/callback --create-secret --secret-expiry 90
+entra-appreg create --name "Backend client" --create-secret --secret-expiry 90
+
+# Add a scope to an API registration that already exists (also sets v2 and auth_time)
+entra-appreg expose-api --appid "YOUR_API_CLIENT_OR_OBJECT_ID" --scope-name access_as_user
 
 # Existing registration: look it up only; nothing is changed
 entra-appreg create --appid "YOUR_CLIENT_OR_OBJECT_ID"
@@ -389,9 +400,9 @@ After every change, update this README for behavior or limit changes, and add a 
 **Live**, only in a deliberately chosen **test tenant**. Never log out or switch a shared operator session.
 
 1. `list --top 1 --json`: stdout is valid JSON only, the tenant is correct, and no report is written.
-2. Create a test SPA (try `--params-file` with a copy of `examples/spa.params.json` and a unique `name`). In the portal check the audience and redirects, that **Enterprise applications** lists it under the printed `AUTH_SP_ID`, and that **API permissions** shows Graph `User.Read` (plus the app's own scope if exposed). Check the three IDs and the report. Sign in once with an MSAL.js sample using the client ID, tenant ID and a listed redirect URI.
-3. Run create again with the existing `--appid`: nothing is created or changed, and no report is written.
-4. Expose a scope. Existing settings are kept, and a duplicate name that differs only in case fails without an update.
+2. Create a test API registration from a copy of `examples/api.params.json` (unique `name`, a test vault). In the portal check **Expose an API** shows `api://<client-id>/access_as_user` (admins only), **Manifest** shows `"requestedAccessTokenVersion": 2`, **Token configuration** lists `auth_time` for the Access token type, and the secret is in the vault, not the report.
+3. Create a test SPA from a copy of `examples/spa.params.json`. Check the audience and redirects, that **Enterprise applications** lists it under the printed `AUTH_SP_ID`, and that **API permissions** shows Graph `User.Read`. Add `My APIs → <test api> → access_as_user`, grant admin consent, and sign in once with an MSAL.js sample. A decoded token for the API scope must have `ver` `2.0` and an `auth_time` claim.
+4. Run create again with an existing `--appid`: nothing is created or changed, and no report is written. Run `expose-api` on the test API with a second scope name: existing settings and optional claims are kept, `auth_time` appears once, and a duplicate name that differs only in case fails without an update.
 5. Create a test secret. Check the expiry, the report contents, and the file permissions. Repeat with `--keyvault-uri`/`--keyvault-secret-name` against a test vault: the secret version, expiry and tags appear in the vault, and the report lists its ID.
 6. Remove disposable registrations with `delete`: cancel once, check the app still exists, then confirm with `yes`.
 

@@ -56,6 +56,40 @@ func TestExposePreservesExistingAPIAndIdentifierURIs(t *testing.T) {
 	}
 }
 
+// expose-api makes the registration an API: its access tokens must be v2 and
+// carry auth_time. optionalClaims is replaced whole, so existing claims stay.
+func TestExposeSetsV2AndAuthTimeKeepingClaims(t *testing.T) {
+	cases := map[string]struct{ claims, want string }{
+		"none": {``, `{"accessToken":[{"name":"auth_time","essential":false,"additionalProperties":[]}],"idToken":[],"saml2Token":[]}`},
+		"existing": {`,"optionalClaims":{"accessToken":[{"name":"email","essential":true,"additionalProperties":[]}],"idToken":[{"name":"upn","additionalProperties":[]}],"saml2Token":[]}`,
+			`{"accessToken":[{"name":"email","essential":true,"additionalProperties":[]},{"name":"auth_time","essential":false,"additionalProperties":[]}],"idToken":[{"name":"upn","additionalProperties":[]}],"saml2Token":[]}`},
+		"already": {`,"optionalClaims":{"accessToken":[{"name":"auth_time","essential":true,"additionalProperties":[]}],"idToken":[],"saml2Token":[]}`,
+			`{"accessToken":[{"name":"auth_time","essential":true,"additionalProperties":[]}],"idToken":[],"saml2Token":[]}`},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := graphtest.New(t,
+				raw(200, `{"id":"object","appId":"client","displayName":"Original","api":{"requestedAccessTokenVersion":1}`+c.claims+`}`),
+				raw(204, ""))
+			if err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env); err != nil {
+				t.Fatal(err)
+			}
+			patch := decode(t, f.Requests()[1])
+			if v := patch["api"].(obj)["requestedAccessTokenVersion"]; v != float64(2) {
+				t.Errorf("requestedAccessTokenVersion = %v", v)
+			}
+			var want obj
+			if err := json.Unmarshal([]byte(c.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(patch["optionalClaims"], any(want)) {
+				got, _ := json.Marshal(patch["optionalClaims"])
+				t.Errorf("optionalClaims:\n got %s\nwant %s", got, c.want)
+			}
+		})
+	}
+}
+
 // assertExposeFailsBeforePatch runs expose-api against a single GET reply and
 // requires a runtime error with no PATCH sent.
 func assertExposeFailsBeforePatch(t *testing.T, appJSON string) {

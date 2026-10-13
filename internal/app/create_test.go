@@ -124,6 +124,10 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			if got := api["requestedAccessTokenVersion"]; got != 2.0 {
 				t.Errorf("PATCH requestedAccessTokenVersion = %v", got)
 			}
+			authTime := obj{"accessToken": arr{obj{"name": "auth_time", "essential": false, "additionalProperties": arr{}}}, "idToken": arr{}, "saml2Token": arr{}}
+			if got := patch["optionalClaims"]; !reflect.DeepEqual(got, authTime) {
+				t.Errorf("PATCH optionalClaims = %v", got)
+			}
 			scope := api["oauth2PermissionScopes"].(arr)[0].(obj)
 			if scope["type"] != "User" {
 				t.Errorf("scope type = %v", scope["type"])

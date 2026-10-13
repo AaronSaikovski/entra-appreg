@@ -381,12 +381,11 @@ func addScope(ctx context.Context, g *graph.Client, out io.Writer, plan createPl
 	fmt.Fprintf(out, "Exposing API: adding scope '%s' (%s, %s)\n", scope.fullName, scope.spec.consentLabel(), scope.spec.stateLabel())
 	api := models.NewApiApplication()
 	api.SetOauth2PermissionScopes([]models.PermissionScopeable{buildScope(scope.id, scope.spec)})
-	if plan.needsV2() {
-		api.SetRequestedAccessTokenVersion(new(int32(2)))
-	}
+	api.SetRequestedAccessTokenVersion(new(int32(2)))
 	patch := models.NewApplication()
 	patch.SetIdentifierUris([]string{identifier})
 	patch.SetApi(api)
+	patch.SetOptionalClaims(withAuthTime(nil))
 	patch.SetRequiredResourceAccess(requiredAccess(clientID, scope))
 	if err := g.PatchApplication(ctx, objectID, patch); err != nil {
 		return nil, err

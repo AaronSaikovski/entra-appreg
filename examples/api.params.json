@@ -1,0 +1,13 @@
+{
+  "name": "my-api-dev",
+  "audience": "AzureADMyOrg",
+  "scope-name": "access_as_user",
+  "scope-consent": "admins",
+  "scope-display-name": "Access My API as the signed-in user",
+  "scope-description": "Allow the application to access My API on behalf of the signed-in user.",
+  "scope-state": "enabled",
+  "create-secret": true,
+  "secret-expiry": "365",
+  "keyvault-uri": "https://my-vault.vault.azure.net",
+  "keyvault-secret-name": "GraphClientSecret"
+}
