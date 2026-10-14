@@ -8,6 +8,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -115,8 +117,8 @@ type staticCredential struct {
 	token azcore.AccessToken
 }
 
-// redactedCredential is what fmt prints for a staticCredential, so a stray
-// %v or %#v can never log the token.
+// redactedCredential is what fmt prints for a staticCredential. Format
+// implements fmt.Formatter, so no fmt verb can print the token.
 const redactedCredential = "auth.staticCredential{redacted}"
 
 // GetToken returns the stored token regardless of the request options.
@@ -124,5 +126,7 @@ func (c staticCredential) GetToken(context.Context, policy.TokenRequestOptions) 
 	return c.token, nil
 }
 
-func (staticCredential) String() string   { return redactedCredential }
-func (staticCredential) GoString() string { return redactedCredential }
+func (staticCredential) String() string { return redactedCredential }
+
+// Format writes redactedCredential for every verb and flag.
+func (staticCredential) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redactedCredential) }

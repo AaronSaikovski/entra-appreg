@@ -59,7 +59,7 @@ func assertContains(t *testing.T, msg string, wants ...string) {
 
 func TestLookupFallsBackOnlyOnNotFoundAndEncodesODataQuotes(t *testing.T) {
 	f := graphtest.New(t, raw(404, "missing"), appJSON())
-	app, err := f.Client(t).GetApplication(t.Context(), "a'b /?#")
+	app, err := f.Client().GetApplication(t.Context(), "a'b /?#")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestLookupFallsBackOnlyOnNotFoundAndEncodesODataQuotes(t *testing.T) {
 
 func TestTwoNotFoundResponsesAreAbsent(t *testing.T) {
 	f := graphtest.New(t, raw(404, "first"), raw(404, "second"))
-	app, err := f.Client(t).GetApplication(t.Context(), "missing")
+	app, err := f.Client().GetApplication(t.Context(), "missing")
 	if err != nil || app != nil {
 		t.Fatalf("got %v, %v; want nil, nil", app, err)
 	}
@@ -111,7 +111,7 @@ func TestLookupNeverFallsBackOnForbiddenOrMalformedSuccess(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, raw(tc.status, tc.body))
-			app, err := f.Client(t).GetApplication(t.Context(), "reference")
+			app, err := f.Client().GetApplication(t.Context(), "reference")
 			if err == nil {
 				t.Fatalf("got %v, want error", app)
 			}
@@ -131,7 +131,7 @@ func TestForbiddenListPreservesGraphDetailsWithoutRetrying(t *testing.T) {
 		Select: []string{"id", "appId", "displayName"},
 		Top:    new(int32(50)),
 	}
-	err := f.Client(t).ApplicationPages(t.Context(), q,
+	err := f.Client().ApplicationPages(t.Context(), q,
 		func(models.ApplicationCollectionResponseable, bool) (bool, error) {
 			t.Error("visit called on a failed request")
 			return true, nil
@@ -152,7 +152,7 @@ func TestRedirectsAreErrorsWithoutFollowingLocation(t *testing.T) {
 		Body:   "redirect-body",
 		Header: map[string]string{"Location": destination.Base + "/applications/reference"},
 	})
-	_, err := source.Client(t).GetApplication(t.Context(), "reference")
+	_, err := source.Client().GetApplication(t.Context(), "reference")
 	var status *graph.StatusError
 	if !errors.As(err, &status) || status.Status != 302 {
 		t.Fatalf("got %v, want StatusError 302", err)
@@ -171,7 +171,7 @@ func TestRedirectsAreErrorsWithoutFollowingLocation(t *testing.T) {
 func TestUnsafePageURLIsRejectedBeforeSending(t *testing.T) {
 	destination := graphtest.New(t)
 	source := graphtest.New(t, page(destination.Base+"/applications?page=2"))
-	client := source.Client(t)
+	client := source.Client()
 	visited := 0
 	err := client.ApplicationPages(t.Context(), nil,
 		func(models.ApplicationCollectionResponseable, bool) (bool, error) {
@@ -223,13 +223,14 @@ func TestPaginationRestrictsOriginCredentialsAndScheme(t *testing.T) {
 		{"https://graph.microsoft.com/beta/applications", untrusted},
 		{"https://graph.microsoft.com/v1.0/../beta/applications", untrusted},
 		{"https://graph.microsoft.com/v1.0", untrusted},
+		{"https://graph.micro\u017Foft.com/v1.0/applications", untrusted},
 	} {
 		if _, err := client.ValidateNextLink(tc.link); err == nil || err.Error() != tc.want {
 			t.Errorf("%s: got %v, want %q", tc.link, err, tc.want)
 		}
 	}
 	f := graphtest.New(t)
-	fixtureClient := f.Client(t)
+	fixtureClient := f.Client()
 	if _, err := fixtureClient.ValidateNextLink(f.Base + "/applications"); err != nil {
 		t.Errorf("rejected fixture link: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestPaginationRestrictsOriginCredentialsAndScheme(t *testing.T) {
 
 func TestPatchAcceptsEmptySuccessButPostRequiresJSON(t *testing.T) {
 	f := graphtest.New(t, raw(204, ""), raw(201, ""))
-	client := f.Client(t)
+	client := f.Client()
 	patch := models.NewApplication()
 	patch.SetDisplayName(new("new"))
 	if err := client.PatchApplication(t.Context(), "object", patch); err != nil {
@@ -267,7 +268,7 @@ func TestPatchAcceptsEmptySuccessButPostRequiresJSON(t *testing.T) {
 
 func TestRequestsCarryBearerToken(t *testing.T) {
 	f := graphtest.New(t, appJSON())
-	if _, err := f.Client(t).GetApplication(t.Context(), "object"); err != nil {
+	if _, err := f.Client().GetApplication(t.Context(), "object"); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.Requests()[0].Authorization; got != "Bearer fake-token" {
@@ -277,7 +278,7 @@ func TestRequestsCarryBearerToken(t *testing.T) {
 
 func TestStatusErrorKeepsRawBody(t *testing.T) {
 	f := graphtest.New(t, raw(403, forbiddenBody), raw(403, forbiddenBody))
-	client := f.Client(t)
+	client := f.Client()
 	_, err := client.GetApplication(t.Context(), "reference")
 	if err == nil {
 		t.Fatal("expected error")
@@ -314,7 +315,7 @@ func TestStatusErrorBodyIsCappedAtOneMiB(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := strings.Repeat("x", tc.size)
 			f := graphtest.New(t, raw(500, body))
-			err := f.Client(t).DeleteApplication(t.Context(), "object")
+			err := f.Client().DeleteApplication(t.Context(), "object")
 			var status *graph.StatusError
 			if !errors.As(err, &status) {
 				t.Fatalf("got %v, want *graph.StatusError", err)
@@ -332,7 +333,7 @@ func TestStatusErrorBodyIsCappedAtOneMiB(t *testing.T) {
 
 func TestGenericStatusErrorText(t *testing.T) {
 	f := graphtest.New(t, raw(500, "boom"))
-	err := f.Client(t).DeleteApplication(t.Context(), "object")
+	err := f.Client().DeleteApplication(t.Context(), "object")
 	if err == nil || err.Error() != "DELETE /v1.0/applications/object failed with HTTP 500: boom" {
 		t.Fatalf("got %v", err)
 	}
@@ -355,7 +356,7 @@ func TestFailuresAreNotRetried(t *testing.T) {
 	} {
 		t.Run(strconv.Itoa(reply.Status), func(t *testing.T) {
 			f := graphtest.New(t, reply)
-			err := f.Client(t).DeleteApplication(t.Context(), "object")
+			err := f.Client().DeleteApplication(t.Context(), "object")
 			var status *graph.StatusError
 			if !errors.As(err, &status) || status.Status != reply.Status || status.Body != reply.Body {
 				t.Errorf("got %v", err)
@@ -375,7 +376,7 @@ func TestRequestBodiesAreNotCompressed(t *testing.T) {
 	spa := models.NewSpaApplication()
 	spa.SetRedirectUris([]string{})
 	app.SetSpa(spa)
-	created, err := f.Client(t).CreateApplication(t.Context(), app)
+	created, err := f.Client().CreateApplication(t.Context(), app)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +404,7 @@ func TestApplicationPagesFollowValidatedLinks(t *testing.T) {
 	)
 	var hasNext []bool
 	ids := 0
-	err := f.Client(t).ApplicationPages(t.Context(),
+	err := f.Client().ApplicationPages(t.Context(),
 		&applications.ApplicationsRequestBuilderGetQueryParameters{
 			Filter: new("displayName eq 'App'"),
 			Select: []string{"id"},
@@ -440,7 +441,7 @@ func TestApplicationPagesRejectRepeatedLinks(t *testing.T) {
 		visited++
 		return false, nil
 	}
-	err := self.Client(t).ApplicationPages(t.Context(), nil, visit)
+	err := self.Client().ApplicationPages(t.Context(), nil, visit)
 	if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
 		t.Fatalf("got %v, want repeated next-page link", err)
 	}
@@ -451,7 +452,7 @@ func TestApplicationPagesRejectRepeatedLinks(t *testing.T) {
 	// Page 2 links back to page 1.
 	visited = 0
 	cycle := graphtest.New(t, page("{base}/applications?page=2"), page("{base}/applications"))
-	err = cycle.Client(t).ApplicationPages(t.Context(), nil, visit)
+	err = cycle.Client().ApplicationPages(t.Context(), nil, visit)
 	if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
 		t.Fatalf("got %v, want repeated next-page link", err)
 	}
@@ -462,7 +463,7 @@ func TestApplicationPagesRejectRepeatedLinks(t *testing.T) {
 
 func TestApplicationPagesStopWhenVisitorStops(t *testing.T) {
 	f := graphtest.New(t, page("{base}/applications?page=2"))
-	err := f.Client(t).ApplicationPages(t.Context(), nil,
+	err := f.Client().ApplicationPages(t.Context(), nil,
 		func(models.ApplicationCollectionResponseable, bool) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +473,7 @@ func TestApplicationPagesStopWhenVisitorStops(t *testing.T) {
 	}
 	sentinel := errors.New("visitor failed")
 	g := graphtest.New(t, page(""))
-	err = g.Client(t).ApplicationPages(t.Context(), nil,
+	err = g.Client().ApplicationPages(t.Context(), nil,
 		func(models.ApplicationCollectionResponseable, bool) (bool, error) { return false, sentinel })
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("got %v, want visitor error", err)
@@ -495,7 +496,7 @@ func TestApplicationPagesDescribeInvalidReplies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, tc.responses...)
-			err := f.Client(t).ApplicationPages(t.Context(), q, visit)
+			err := f.Client().ApplicationPages(t.Context(), q, visit)
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("got %v, want prefix %q", err, tc.want)
 			}
@@ -507,7 +508,7 @@ func TestOrganizationSelectsIDAndDisplayName(t *testing.T) {
 	f := graphtest.New(t, graphtest.JSON(200, map[string]any{
 		"value": []any{map[string]any{"id": "tenant", "displayName": "Contoso"}},
 	}))
-	orgs, err := f.Client(t).Organization(t.Context())
+	orgs, err := f.Client().Organization(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +525,7 @@ func TestAddPasswordPostsCredentialAndRequiresReply(t *testing.T) {
 	f := graphtest.New(t,
 		graphtest.JSON(200, map[string]any{"secretText": "fake-one-time-secret", "keyId": "00000000-0000-0000-0000-000000000001"}),
 		raw(200, ""))
-	client := f.Client(t)
+	client := f.Client()
 	cred := models.NewPasswordCredential()
 	cred.SetDisplayName(new("secret"))
 	secret, err := client.AddPassword(t.Context(), "object", cred)
@@ -556,7 +557,7 @@ func TestCreateServicePrincipalPostsAppIDAndRequiresID(t *testing.T) {
 		graphtest.JSON(201, map[string]any{"id": "sp", "appId": "client"}),
 		graphtest.JSON(201, map[string]any{"appId": "client"}),
 		raw(400, "not replicated"))
-	client := f.Client(t)
+	client := f.Client()
 	if id, err := client.CreateServicePrincipal(t.Context(), "client"); err != nil || id != "sp" {
 		t.Fatalf("got %q, %v", id, err)
 	}
@@ -580,6 +581,7 @@ func TestNewForBaseRejectsUntrustedBases(t *testing.T) {
 		"https://user@graph.microsoft.com/v1.0",
 		"https://graph.microsoft.com/v1.0?x=1",
 		"https://graph.microsoft.com/v1.0#fragment",
+		"https://graph.micro\u017Foft.com/v1.0",
 		"http://localhost:8080/v1.0",
 		"http://10.0.0.1/v1.0",
 		"https://127.0.0.1/v1.0",

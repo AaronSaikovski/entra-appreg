@@ -30,9 +30,11 @@ var audiences = []string{
 // Microsoft Graph's well-known application ID and its delegated User.Read
 // permission ID. The Entra admin center adds this permission to every new
 // registration; listing it lets an admin grant consent ahead of sign-in.
+const msGraphAppID = "00000003-0000-0000-c000-000000000000"
+
+var userReadScopeID = uuid.MustParse("e1fe6dd8-ba31-4d61-89e7-88639da4683d")
+
 const (
-	msGraphAppID     = "00000003-0000-0000-c000-000000000000"
-	userReadScopeID  = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
 	userReadLabel    = "Microsoft Graph User.Read (delegated)"
 	reportIndent     = "\n                         "
 	noRedirectNotice = "Warning: no --redirect-urls given. The app cannot sign anyone in until a SPA redirect URI is added (Entra admin center > App registrations > Authentication)."
@@ -81,7 +83,7 @@ type createdSecret struct {
 // survive any later failure.
 func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error {
 	out := env.Stdout
-	if o.AppID != nil && *o.AppID != "no-id" {
+	if o.AppID != nil && *o.AppID != cli.NoAppID {
 		exists, err := applicationExists(ctx, g, out, *o.AppID)
 		if err != nil || exists {
 			return err
@@ -140,14 +142,12 @@ func create(ctx context.Context, o *cli.Options, g *graph.Client, env Env) error
 	}
 
 	contents := reportContents(plan, tenantID, objectID, clientID, spID, scope, secret)
-	if err := writeReport(env, plan.name, contents, secret != nil && !storedInVault(plan, secret)); err != nil {
-		return err
-	}
+	reportErr := writeReport(env, plan.name, contents, secret != nil && !storedInVault(plan, secret))
 	var keyErr error
 	if secret != nil && secret.keyMissing {
 		keyErr = errors.New("Graph's addPassword response had a missing or invalid keyId; the secret value was preserved in the report.")
 	}
-	return errors.Join(keyErr, vaultErr)
+	return errors.Join(reportErr, keyErr, vaultErr)
 }
 
 // storedInVault reports whether Key Vault confirmed storing the secret, in
@@ -173,7 +173,8 @@ func applicationExists(ctx context.Context, g *graph.Client, out io.Writer, refe
 }
 
 // planCreate validates the creation options in order: name, audience,
-// redirects, scope, lifetime. Every returned error is a *cli.UsageError.
+// redirects, scope, lifetime, Key Vault. Every returned error is a
+// *cli.UsageError.
 func planCreate(o *cli.Options, now time.Time) (createPlan, error) {
 	if o.Name == nil || strings.TrimSpace(*o.Name) == "" {
 		return createPlan{}, cli.Usagef("--name is required when creating an application.")
@@ -351,7 +352,7 @@ func addServicePrincipal(ctx context.Context, g *graph.Client, env Env, clientID
 // consent in the Entra admin center covers both. A PATCH replaces the whole
 // list, so the scope PATCH resends the Graph entry.
 func requiredAccess(clientID string, scope *exposedScope) []models.RequiredResourceAccessable {
-	access := []models.RequiredResourceAccessable{delegatedAccess(msGraphAppID, uuid.MustParse(userReadScopeID))}
+	access := []models.RequiredResourceAccessable{delegatedAccess(msGraphAppID, userReadScopeID)}
 	if scope != nil {
 		access = append(access, delegatedAccess(clientID, scope.id))
 	}

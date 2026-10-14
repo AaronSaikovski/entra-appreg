@@ -25,6 +25,9 @@ const Scope = "https://vault.azure.net/.default"
 
 const vaultSuffix = ".vault.azure.net"
 
+// requestTimeout bounds each Key Vault HTTP request.
+const requestTimeout = 10 * time.Second
+
 // Secret is one secret version to store.
 type Secret struct {
 	Name      string
@@ -49,12 +52,24 @@ func ParseVaultURI(raw string) (string, bool) {
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
 		return "", false
 	}
-	host := strings.ToLower(u.Hostname())
+	host := asciiLower(u.Hostname())
 	name, ok := strings.CutSuffix(host, vaultSuffix)
 	if !ok || !validVaultName(name) {
 		return "", false
 	}
 	return "https://" + host, true
+}
+
+// asciiLower lowercases only ASCII letters, so Unicode case folding (for
+// example KELVIN SIGN to "k") cannot turn a non-ASCII host into a valid one.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 func validVaultName(name string) bool {
@@ -74,7 +89,7 @@ func validVaultName(name string) bool {
 // ValidSecretName reports whether name is a Key Vault secret name: 1-127
 // ASCII letters, digits or hyphens.
 func ValidSecretName(name string) bool {
-	if len(name) < 1 || len(name) > 127 {
+	if name == "" || len(name) > 127 {
 		return false
 	}
 	for i := range len(name) {
@@ -99,7 +114,7 @@ func New(vaultURI string, cred azcore.TokenCredential) (*Client, error) {
 // so they surface as errors instead of being followed.
 func hardenedHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: requestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -154,8 +169,8 @@ func (c *Client) SetSecret(ctx context.Context, s Secret) (string, error) {
 // carries the request URL, status and Key Vault's error body, none of which
 // contain the secret value.
 func describe(name string, err error) error {
-	var respErr *azcore.ResponseError
-	if !errors.As(err, &respErr) {
+	respErr, ok := errors.AsType[*azcore.ResponseError](err)
+	if !ok {
 		return fmt.Errorf("Storing secret '%s' in Key Vault failed: %w", name, err)
 	}
 	guidance := ""

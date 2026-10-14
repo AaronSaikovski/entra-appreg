@@ -105,30 +105,10 @@ func parseFlags(commandName string, args []string) (*Options, error) {
 	})
 
 	flags := root.PersistentFlags()
-	for _, f := range []struct {
-		name   string
-		target **string
-	}{
-		{"appid", &opts.AppID},
-		{"name", &opts.Name},
-		{"audience", &opts.Audience},
-		{"scope-name", &opts.ScopeName},
-		{"scope-display-name", &opts.ScopeDisplayName},
-		{"scope-description", &opts.ScopeDescription},
-		{"scope-consent", &opts.ScopeConsent},
-		{"scope-user-display-name", &opts.ScopeUserDisplayName},
-		{"scope-user-description", &opts.ScopeUserDescription},
-		{"scope-state", &opts.ScopeState},
-		{"top", &opts.Top},
-		{"secret-expiry", &opts.SecretExpiry},
-		{"secret-start", &opts.SecretStart},
-		{"secret-end", &opts.SecretEnd},
-		{"keyvault-uri", &opts.KeyVaultURI},
-		{"keyvault-secret-name", &opts.KeyVaultSecretName},
-		{"params-file", &opts.ParamsFile},
-	} {
+	for _, f := range textOptions(opts) {
 		flags.Var(optionalString{f.target}, f.name, "")
 	}
+	flags.Var(optionalString{&opts.ParamsFile}, "params-file", "")
 	flags.Var(redirectList{&opts.RedirectURIs}, "redirect-urls", "")
 	flags.BoolVar(&opts.JSON, "json", false, "")
 	flags.BoolVar(&opts.CreateSecret, "create-secret", false, "")

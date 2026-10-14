@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -25,7 +24,7 @@ func TestExposePreservesExistingAPIAndIdentifierURIs(t *testing.T) {
 		raw(200, `{"id":"object","appId":"client","displayName":"Original","identifierUris":["api://first/","api://second"],"api":`+apiJSON+`}`),
 		raw(204, ""))
 	tio := newTestIO(t, "")
-	if err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), tio.env); err != nil {
+	if err := exposeAPI(t.Context(), options(t, exposeArgs("object")...), f.Client(), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	requests := f.Requests()
@@ -71,7 +70,7 @@ func TestExposeSetsV2AndAuthTimeKeepingClaims(t *testing.T) {
 			f := graphtest.New(t,
 				raw(200, `{"id":"object","appId":"client","displayName":"Original","api":{"requestedAccessTokenVersion":1}`+c.claims+`}`),
 				raw(204, ""))
-			if err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env); err != nil {
+			if err := exposeAPI(t.Context(), options(t, exposeArgs("object")...), f.Client(), newTestIO(t, "").env); err != nil {
 				t.Fatal(err)
 			}
 			patch := decode(t, f.Requests()[1])
@@ -95,7 +94,7 @@ func TestExposeSetsV2AndAuthTimeKeepingClaims(t *testing.T) {
 func assertExposeFailsBeforePatch(t *testing.T, appJSON string) {
 	t.Helper()
 	f := graphtest.New(t, raw(200, appJSON))
-	err := exposeAPI(context.Background(), options(t, exposeArgs("object")...), f.Client(t), newTestIO(t, "").env)
+	err := exposeAPI(t.Context(), options(t, exposeArgs("object")...), f.Client(), newTestIO(t, "").env)
 	if err == nil || isUsage(err) {
 		t.Errorf("err = %v, want a runtime error", err)
 	}
@@ -130,7 +129,7 @@ func TestExposeMissingURIUsesClientIDAndNullNameUsesReference(t *testing.T) {
 	f := graphtest.New(t,
 		raw(200, `{"id":"object","appId":"client","displayName":null,"api":null,"identifierUris":[]}`),
 		raw(204, ""))
-	if err := exposeAPI(context.Background(), options(t, exposeArgs("reference")...), f.Client(t), newTestIO(t, "").env); err != nil {
+	if err := exposeAPI(t.Context(), options(t, exposeArgs("reference")...), f.Client(), newTestIO(t, "").env); err != nil {
 		t.Fatal(err)
 	}
 	patch := decode(t, f.Requests()[1])
@@ -144,9 +143,9 @@ func TestExposeMissingURIUsesClientIDAndNullNameUsesReference(t *testing.T) {
 }
 
 func TestExposeOutputIsExact(t *testing.T) {
-	f := graphtest.New(t, ok(obj{"id": "object", "appId": "client", "displayName": "App"}), raw(204, ""))
+	f := graphtest.New(t, okJSON(obj{"id": "object", "appId": "client", "displayName": "App"}), raw(204, ""))
 	tio := newTestIO(t, "")
-	if err := exposeAPI(context.Background(), options(t, "expose-api", "--appid", "object", "--scope-name", "read", "--scope-consent", "users", "--scope-state", "disabled"), f.Client(t), tio.env); err != nil {
+	if err := exposeAPI(t.Context(), options(t, "expose-api", "--appid", "object", "--scope-name", "read", "--scope-consent", "users", "--scope-state", "disabled"), f.Client(), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	scopeID, _ := decode(t, f.Requests()[1])["api"].(obj)["oauth2PermissionScopes"].(arr)[0].(obj)["id"].(string)

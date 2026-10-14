@@ -2,7 +2,7 @@ package app
 
 import (
 	"bytes"
-	"context"
+	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
@@ -21,13 +21,14 @@ func ids(apps []listedApp) []string {
 
 func TestListPagesFilterSortStablyAndLimitBeforeSorting(t *testing.T) {
 	f := graphtest.New(t,
-		ok(obj{"value": arr{obj{"displayName": "Zulu", "appId": "c1", "id": "o1"}}, "@odata.nextLink": "{base}/next"}),
-		ok(obj{"value": arr{
+		okJSON(obj{"value": arr{obj{"displayName": "Zulu", "appId": "c1", "id": "o1"}}, "@odata.nextLink": "{base}/next"}),
+		okJSON(obj{"value": arr{
 			obj{"displayName": "alpha", "appId": "c2", "id": "o2"},
 			obj{"displayName": "ALPHA", "appId": "c3", "id": "o3"},
 			obj{"displayName": "Aardvark", "appId": "c4", "id": "o4"},
-		}}))
-	apps, more, err := collectApplications(context.Background(), options(t, "list", "--name", " O'Brien ", "--top", "3"), f.Client(t))
+		}}),
+	)
+	apps, more, err := collectApplications(t.Context(), options(t, "list", "--name", " O'Brien ", "--top", "3"), f.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestListPagesFilterSortStablyAndLimitBeforeSorting(t *testing.T) {
 
 func TestListCountsNextLinkTruncationAndAcceptsNullNames(t *testing.T) {
 	f := graphtest.New(t, raw(200, `{"value":[{"displayName":null,"appId":"client","id":"object"}],"@odata.nextLink":"{base}/next"}`))
-	apps, more, err := collectApplications(context.Background(), options(t, "list", "--top", "1"), f.Client(t))
+	apps, more, err := collectApplications(t.Context(), options(t, "list", "--top", "1"), f.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,15 +77,15 @@ func TestListRejectsSelfLinksAndTwoPageCycles(t *testing.T) {
 		name  string
 		pages []graphtest.Response
 	}{
-		{"self link", []graphtest.Response{ok(obj{"value": arr{}, "@odata.nextLink": initial})}},
+		{"self link", []graphtest.Response{okJSON(obj{"value": arr{}, "@odata.nextLink": initial})}},
 		{"two-page cycle", []graphtest.Response{
-			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/next"}),
-			ok(obj{"value": arr{}, "@odata.nextLink": initial}),
+			okJSON(obj{"value": arr{}, "@odata.nextLink": "{base}/next"}),
+			okJSON(obj{"value": arr{}, "@odata.nextLink": initial}),
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, tc.pages...)
-			_, _, err := collectApplications(context.Background(), options(t, "list"), f.Client(t))
+			_, _, err := collectApplications(t.Context(), options(t, "list"), f.Client())
 			if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
 				t.Fatalf("err = %v", err)
 			}
@@ -96,20 +97,14 @@ func TestListRejectsSelfLinksAndTwoPageCycles(t *testing.T) {
 }
 
 func TestListValidatesNextLinksEvenAfterReachingLimit(t *testing.T) {
-	for _, credentials := range []bool{false, true} {
-		link := "https://example.invalid/steal"
-		if credentials {
-			// Exact origin rules are covered in package graph; here the point is
-			// that the link is validated although --top 1 was already reached.
-			link = strings.Replace(graphtest.New(t).Base, "http://", "http://user:password@", 1) + "/applications"
-		}
-		f := graphtest.New(t, ok(obj{"value": arr{obj{"appId": "client", "id": "object"}}, "@odata.nextLink": link}))
-		if _, _, err := collectApplications(context.Background(), options(t, "list", "--top", "1"), f.Client(t)); err == nil {
-			t.Errorf("credentials %v: untrusted link accepted", credentials)
-		}
-		if n := len(f.Requests()); n != 1 {
-			t.Errorf("credentials %v: %d requests, want 1", credentials, n)
-		}
+	// Exact origin rules are covered in package graph; here the point is that
+	// the link is validated although --top 1 was already reached.
+	f := graphtest.New(t, okJSON(obj{"value": arr{obj{"appId": "client", "id": "object"}}, "@odata.nextLink": "https://example.invalid/steal"}))
+	if _, _, err := collectApplications(t.Context(), options(t, "list", "--top", "1"), f.Client()); err == nil {
+		t.Error("untrusted link accepted")
+	}
+	if n := len(f.Requests()); n != 1 {
+		t.Errorf("%d requests, want 1", n)
 	}
 }
 
@@ -123,13 +118,15 @@ func TestListRejectsMalformedPagesAndConsumedRecords(t *testing.T) {
 		`{"value":[{"id":42,"appId":"client"}]}`,
 		`{"value":[{"id":"object","appId":"client","displayName":false}]}`,
 	} {
-		f := graphtest.New(t, raw(200, page))
-		if _, _, err := collectApplications(context.Background(), options(t, "list"), f.Client(t)); err == nil {
-			t.Errorf("page %s accepted", page)
-		}
-		if n := len(f.Requests()); n != 1 {
-			t.Errorf("page %s: %d requests, want 1", page, n)
-		}
+		t.Run(page, func(t *testing.T) {
+			f := graphtest.New(t, raw(200, page))
+			if _, _, err := collectApplications(t.Context(), options(t, "list"), f.Client()); err == nil {
+				t.Error("page accepted")
+			}
+			if n := len(f.Requests()); n != 1 {
+				t.Errorf("%d requests, want 1", n)
+			}
+		})
 	}
 }
 
@@ -138,14 +135,16 @@ func TestListRequiresExactlyOneOrganization(t *testing.T) {
 		arr{},
 		arr{obj{"id": "t1", "displayName": "One"}, obj{"id": "t2", "displayName": "Two"}},
 	} {
-		f := graphtest.New(t, ok(obj{"value": orgs}))
-		err := list(context.Background(), options(t, "list"), f.Client(t), newTestIO(t, "").env)
-		if err == nil || !strings.Contains(err.Error(), "exactly one tenant organization") {
-			t.Errorf("orgs %v: err = %v", orgs, err)
-		}
-		if n := len(f.Requests()); n != 1 {
-			t.Errorf("orgs %v: %d requests, want 1", orgs, n)
-		}
+		t.Run(fmt.Sprint(len(orgs.(arr)))+" orgs", func(t *testing.T) {
+			f := graphtest.New(t, okJSON(obj{"value": orgs}))
+			err := list(t.Context(), options(t, "list"), f.Client(), newTestIO(t, "").env)
+			if err == nil || !strings.Contains(err.Error(), "exactly one tenant organization") {
+				t.Errorf("err = %v", err)
+			}
+			if n := len(f.Requests()); n != 1 {
+				t.Errorf("%d requests, want 1", n)
+			}
+		})
 	}
 }
 
@@ -166,10 +165,10 @@ func TestWriteListTextEscapesRemoteNames(t *testing.T) {
 
 func TestListJSONKeepsStdoutMachineReadable(t *testing.T) {
 	f := graphtest.New(t,
-		ok(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso <&>"}}}),
-		ok(obj{"value": arr{obj{"displayName": "A&B <x>", "appId": "client", "id": "object"}}}))
+		okJSON(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso <&>"}}}),
+		okJSON(obj{"value": arr{obj{"displayName": "A&B <x>", "appId": "client", "id": "object"}}}))
 	tio := newTestIO(t, "")
-	if err := list(context.Background(), options(t, "list", "--json"), f.Client(t), tio.env); err != nil {
+	if err := list(t.Context(), options(t, "list", "--json"), f.Client(), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	want := "[\n  {\n    \"displayName\": \"A&B <x>\",\n    \"appId\": \"client\",\n    \"id\": \"object\"\n  }\n]\n"
@@ -182,8 +181,8 @@ func TestListJSONKeepsStdoutMachineReadable(t *testing.T) {
 }
 
 func TestListOutputIsExact(t *testing.T) {
-	tenant := ok(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
-	page := ok(obj{"value": arr{obj{"displayName": "App", "appId": "client", "id": "object"}}, "@odata.nextLink": "{base}/next"})
+	tenant := okJSON(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
+	page := okJSON(obj{"value": arr{obj{"displayName": "App", "appId": "client", "id": "object"}}, "@odata.nextLink": "{base}/next"})
 	for _, tc := range []struct {
 		name             string
 		args             []string
@@ -204,7 +203,7 @@ func TestListOutputIsExact(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, tenant, page)
 			tio := newTestIO(t, "")
-			if err := list(context.Background(), options(t, tc.args...), f.Client(t), tio.env); err != nil {
+			if err := list(t.Context(), options(t, tc.args...), f.Client(), tio.env); err != nil {
 				t.Fatal(err)
 			}
 			if got := tio.stdout.String(); got != tc.wantOut {
@@ -235,5 +234,22 @@ func TestWriteListTextEmptyResults(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestListSortFoldsOnlyASCIILetters(t *testing.T) {
+	f := graphtest.New(t, okJSON(obj{"value": arr{
+		obj{"displayName": "Ib", "appId": "c1", "id": "Ib"},
+		obj{"displayName": "ıa", "appId": "c2", "id": "ıa"},
+		obj{"displayName": "Ia", "appId": "c3", "id": "Ia"},
+		obj{"displayName": "ſa", "appId": "c4", "id": "ſa"},
+		obj{"displayName": "sb", "appId": "c5", "id": "sb"},
+	}}))
+	apps, _, err := collectApplications(t.Context(), options(t, "list"), f.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Ia", "Ib", "sb", "ıa", "ſa"}; !reflect.DeepEqual(ids(apps), want) {
+		t.Errorf("order %v, want %v", ids(apps), want)
 	}
 }

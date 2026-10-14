@@ -22,9 +22,14 @@ import (
 	"github.com/microsoftgraph/msgraph-sdk-go/applications"
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 	"github.com/microsoftgraph/msgraph-sdk-go/organization"
+
+	"github.com/AaronSaikovski/entra-appreg/internal/cli"
 )
 
 const graphBase = "https://graph.microsoft.com/v1.0"
+
+// requestTimeout bounds each HTTP request to Microsoft Graph.
+const requestTimeout = 10 * time.Second
 
 // Scope is the OAuth scope requested for Microsoft Graph tokens.
 const Scope = "https://graph.microsoft.com/.default"
@@ -84,7 +89,7 @@ func parseBase(base string) (*url.URL, error) {
 // a request is sent at most once, never followed, and never gzip-encoded.
 func newHTTPClient(applicationsPath string) *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: requestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -104,7 +109,7 @@ func trustedBase(u *url.URL) bool {
 	switch u.Scheme {
 	case "https":
 		port := u.Port()
-		return strings.EqualFold(u.Hostname(), "graph.microsoft.com") && (port == "" || port == "443")
+		return cli.EqualFoldASCII(u.Hostname(), "graph.microsoft.com") && (port == "" || port == "443")
 	case "http":
 		ip := net.ParseIP(u.Hostname())
 		return ip != nil && ip.IsLoopback()
@@ -299,7 +304,7 @@ func (c *Client) validateNextLink(raw string) (*url.URL, error) {
 	// Remove dot segments so "/v1.0/../beta" cannot pass the prefix check.
 	u = c.base.ResolveReference(u)
 	if u.Scheme != c.base.Scheme ||
-		!strings.EqualFold(u.Hostname(), c.base.Hostname()) ||
+		!cli.EqualFoldASCII(u.Hostname(), c.base.Hostname()) ||
 		effectivePort(u) != effectivePort(c.base) ||
 		u.User != nil ||
 		strings.ContainsRune(raw, '#') || // also rejects an empty fragment

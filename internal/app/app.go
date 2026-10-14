@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -40,8 +41,10 @@ func Run(ctx context.Context, opts *cli.Options, g *graph.Client, env Env) error
 		return list(ctx, opts, g, env)
 	case cli.CommandDelete:
 		return deleteApp(ctx, opts, g, env)
-	default:
+	case cli.CommandCreate:
 		return create(ctx, opts, g, env)
+	default:
+		return fmt.Errorf("unsupported command %d", opts.Command)
 	}
 }
 

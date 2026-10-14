@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,8 +24,21 @@ type listedApp struct {
 	sortKey  string
 }
 
+// upperASCII upper-cases only a-z, so non-ASCII letters such as ı or ſ keep
+// their bytes and sort after every ASCII name instead of folding to I or S.
+func upperASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'a' <= c && c <= 'z' {
+			b[i] = c - ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // collectApplications returns up to o.ListLimit applications sorted by name
-// (ASCII case-insensitive, stable), and whether more exist beyond the limit.
+// (case-insensitive for ASCII letters only, stable), and whether more exist
+// beyond the limit.
 // The limit applies in Graph's order, before sorting.
 func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) ([]listedApp, bool, error) {
 	limit := o.ListLimit
@@ -50,7 +63,7 @@ func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) (
 				return false, graph.MissingFieldError("id")
 			}
 			name := deref(item.GetDisplayName(), "")
-			apps = append(apps, listedApp{Name: name, ClientID: *clientID, ID: *id, sortKey: strings.ToUpper(name)})
+			apps = append(apps, listedApp{Name: name, ClientID: *clientID, ID: *id, sortKey: upperASCII(name)})
 		}
 		if len(apps) < limit {
 			return false, nil
@@ -61,7 +74,7 @@ func collectApplications(ctx context.Context, o *cli.Options, g *graph.Client) (
 	if err != nil {
 		return nil, false, err
 	}
-	sort.SliceStable(apps, func(i, j int) bool { return apps[i].sortKey < apps[j].sortKey })
+	slices.SortStableFunc(apps, func(a, b listedApp) int { return strings.Compare(a.sortKey, b.sortKey) })
 	return apps, more, nil
 }
 

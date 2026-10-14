@@ -23,7 +23,7 @@ import (
 // Response is one queued fixture reply. A non-empty Body without a
 // Content-Type header is sent as application/json, as Graph would. Every
 // "{base}" in Body is replaced with the fixture's Base when sent, so replies
-// can carry next-page links back to the same server.
+// can carry next-page links back to the same server. A zero Status means 200.
 type Response struct {
 	Status int
 	Body   string
@@ -111,7 +111,11 @@ func (f *Fixture) write(w http.ResponseWriter, reply Response) {
 		}
 		header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
-	w.WriteHeader(reply.Status)
+	status := reply.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
 	_, _ = io.WriteString(w, body)
 }
 
@@ -123,11 +127,11 @@ func (f *Fixture) Requests() []Request {
 }
 
 // Client returns a graph client for this fixture authenticated with "fake-token".
-func (f *Fixture) Client(t testing.TB) *graph.Client {
-	t.Helper()
+func (f *Fixture) Client() *graph.Client {
+	f.t.Helper()
 	client, err := graph.NewForBase(fakeCredential{token: "fake-token"}, f.Base)
 	if err != nil {
-		t.Fatalf("graphtest: creating client: %v", err)
+		f.t.Fatalf("graphtest: creating client: %v", err)
 	}
 	return client
 }

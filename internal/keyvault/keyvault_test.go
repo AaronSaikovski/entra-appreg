@@ -109,35 +109,37 @@ func TestSetSecretOmitsUnsetNotBeforeAndTags(t *testing.T) {
 
 func TestSetSecretErrorsCarryGuidanceButNeverTheValue(t *testing.T) {
 	for _, tc := range []struct {
+		name   string
 		status int
 		body   string
 		want   []string
 	}{
-		{403, `{"error":{"code":"Forbidden","message":"denied"}}`, []string{"Key Vault Secrets Officer", "Storing secret 'n' in Key Vault failed", "403"}},
-		{409, `{"error":{"code":"Conflict","message":"deleted"}}`, []string{"soft-deleted secret", "409"}},
-		{500, `{"error":{"code":"Boom","message":"boom"}}`, []string{"Storing secret 'n' in Key Vault failed", "500", "Boom"}},
-		{302, ``, []string{"Storing secret 'n' in Key Vault failed", "302"}}, // redirects are not followed
-		{200, `{}`, []string{"requires an object with string 'id'"}},
-		{200, `not json`, []string{"Storing secret 'n' in Key Vault failed"}},
+		{"HTTP 403", 403, `{"error":{"code":"Forbidden","message":"denied"}}`, []string{"Key Vault Secrets Officer", "Storing secret 'n' in Key Vault failed", "403"}},
+		{"HTTP 409", 409, `{"error":{"code":"Conflict","message":"deleted"}}`, []string{"soft-deleted secret", "409"}},
+		{"HTTP 500", 500, `{"error":{"code":"Boom","message":"boom"}}`, []string{"Storing secret 'n' in Key Vault failed", "500", "Boom"}},
+		{"HTTP 302", 302, ``, []string{"Storing secret 'n' in Key Vault failed", "302"}}, // redirects are not followed
+		{"HTTP 200 missing id", 200, `{}`, []string{"requires an object with string 'id'"}},
+		{"HTTP 200 invalid json", 200, `not json`, []string{"Storing secret 'n' in Key Vault failed"}},
 	} {
-		c, got, _ := serve(t, tc.status, tc.body)
-		_, err := c.SetSecret(t.Context(), Secret{Name: "n", Value: secretValue, Expires: time.Unix(1, 0)})
-		if err == nil {
-			t.Errorf("HTTP %d: succeeded", tc.status)
-			continue
-		}
-		for _, want := range tc.want {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("HTTP %d: %q lacks %q", tc.status, err, want)
+		t.Run(tc.name, func(t *testing.T) {
+			c, got, _ := serve(t, tc.status, tc.body)
+			_, err := c.SetSecret(t.Context(), Secret{Name: "n", Value: secretValue, Expires: time.Unix(1, 0)})
+			if err == nil {
+				t.Fatal("succeeded")
 			}
-		}
-		if strings.Contains(err.Error(), secretValue) {
-			t.Errorf("HTTP %d: error leaks the secret: %v", tc.status, err)
-		}
-		// Retries are disabled: one authenticated attempt only.
-		if got.authenticated != 1 {
-			t.Errorf("HTTP %d: %d authenticated attempts", tc.status, got.authenticated)
-		}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%q lacks %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), secretValue) {
+				t.Errorf("error leaks the secret: %v", err)
+			}
+			// Retries are disabled: one authenticated attempt only.
+			if got.authenticated != 1 {
+				t.Errorf("%d authenticated attempts", got.authenticated)
+			}
+		})
 	}
 }
 
@@ -155,6 +157,8 @@ func TestParseVaultURI(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://my-vault.vault.azure.net":                        "https://my-vault.vault.azure.net",
 		"https://My-Vault.VAULT.azure.net/":                       "https://my-vault.vault.azure.net",
+		"https://KEYVAULT.vault.azure.net":                        "https://keyvault.vault.azure.net",
+		"https://\u212Aeyvault.vault.azure.net":                   "",
 		" https://abc.vault.azure.net ":                           "https://abc.vault.azure.net",
 		"http://abc.vault.azure.net":                              "",
 		"https://abc.vault.azure.net:443":                         "",

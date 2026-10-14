@@ -19,6 +19,9 @@ const (
 	CommandDelete
 )
 
+// NoAppID is the --appid value that skips create's existing-app lookup.
+const NoAppID = "no-id"
+
 // HelpTopic selects one of the help texts.
 type HelpTopic int
 
@@ -131,7 +134,7 @@ func Parse(args []string) (Invocation, error) {
 	commandGiven := len(args) > 0 && !strings.HasPrefix(args[0], "-")
 	name := "create"
 	if commandGiven {
-		name = strings.ToLower(args[0])
+		name = lowerASCII(args[0])
 		args = args[1:]
 		if name == "help" {
 			return helpInvocation(args)
@@ -171,7 +174,7 @@ func Parse(args []string) (Invocation, error) {
 func helpInvocation(args []string) (Invocation, error) {
 	word := "general"
 	if len(args) > 0 {
-		word = strings.ToLower(args[0])
+		word = lowerASCII(args[0])
 	}
 	if word == "general" {
 		return Invocation{Kind: KindHelp, Topic: TopicGeneral}, nil
@@ -181,6 +184,19 @@ func helpInvocation(args []string) (Invocation, error) {
 		return Invocation{}, Usagef("No help for '%s'. Try: help, help create, help expose-api, help list, help delete.", word)
 	}
 	return Invocation{Kind: KindHelp, Topic: spec.topic}, nil
+}
+
+// lowerASCII folds only A-Z to lower case. strings.ToLower would apply
+// Unicode folding, so a word such as "LİST" (dotted capital I) would resolve
+// to the list command.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // earlyExit returns the version, help or no-arguments invocation that args
@@ -223,7 +239,7 @@ func validate(o *Options) error {
 	if o.AppID != nil && strings.TrimSpace(*o.AppID) == "" {
 		return Usagef("--appid cannot be blank; omit it when creating a new application.")
 	}
-	missingID := o.AppID == nil || *o.AppID == "no-id"
+	missingID := o.AppID == nil || *o.AppID == NoAppID
 	switch o.Command {
 	case CommandDelete:
 		if missingID {

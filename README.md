@@ -72,7 +72,7 @@ Copy the samples and change `name`, the redirect URIs and the vault first. Then,
 
 Separate options from their values with a space: `--name "My SPA"`, not `--name=...`. Single-dash options and a bare `--` are rejected.
 
-Option names are case-sensitive; command names are not. If an option is repeated, the last value wins, except redirect options, which add up. If the first argument is an option, the command defaults to `create`.
+Option names are case-sensitive; command names are not (ASCII letters only, so `LİST` is an unknown command). If an option is repeated, the last value wins, except redirect options, which add up. If the first argument is an option, the command defaults to `create`.
 
 `--version` takes priority over `--help`, and `--help` takes priority over option checks, even when they appear where a value is expected. Running with no arguments prints help and exits 2.
 
@@ -180,7 +180,7 @@ entra-appreg create --appid "YOUR_CLIENT_OR_OBJECT_ID"
 
 With `--create-secret`, add both `--keyvault-uri https://<vault-name>.vault.azure.net` and `--keyvault-secret-name <name>` to also write the new secret value to Azure Key Vault. This uses the [Azure SDK for Go `azsecrets`](https://learn.microsoft.com/en-us/azure/key-vault/secrets/quick-create-go) client.
 
-- **Validation.** Both options are required together and only with `--create-secret`. The URI must be `https://<vault-name>.vault.azure.net` (public cloud; no path, port or query), and the name must be 1–127 letters, digits or hyphens. Like the other `create` options, they are checked after sign-in and any `--appid` lookup. Bad values exit 2 before anything is created and before the Key Vault token is requested.
+- **Validation.** Both options are required together and only with `--create-secret`. The URI must be `https://<vault-name>.vault.azure.net` (public cloud; no path, port or query; only ASCII letters fold case, so look-alike characters such as the Kelvin sign `K` are rejected), and the name must be 1–127 letters, digits or hyphens. Like the other `create` options, they are checked after sign-in and any `--appid` lookup. Bad values exit 2 before anything is created and before the Key Vault token is requested.
 - **Sign-in.** A Key Vault token comes from a second `az` call, made after the read-only checks and before the app is created, so a missing token changes nothing. The vault must be in the tenant of your active `az login`. The SDK handles Key Vault's challenge and checks that the challenge comes from a `vault.azure.net` resource.
 - **Permission.** Your `az login` identity needs the **Key Vault Secrets Officer** role on the vault. See [Key Vault permissions](#key-vault-permissions).
 - **What is stored.** The secret value, with `exp` set to the secret's expiry, `nbf` set to a future custom start date, and tags `entra-client-id` and `entra-key-id`. If the name already exists, Key Vault adds a new version. A soft-deleted secret with the same name fails with HTTP 409.
@@ -250,9 +250,9 @@ entra-appreg list --top all --json
 | `--json` | Prints only a JSON array of `displayName`, `appId` and `id` on stdout. |
 
 - **Tenant line.** The tenant name and ID are printed first; they come from Graph `/organization`. With `--json` they go to stderr.
-- **Sorting.** The first matching records are collected, then sorted by name.
+- **Sorting.** The first matching records are collected, then sorted by name, ignoring case for ASCII letters only (stable for equal names).
 - **Safe names.** In text mode, names are printed in quotes with control characters escaped, so a crafted name can't control your terminal.
-- **Paging safety.** Next-page links must stay on Graph's `/v1.0/` path, and a repeated link stops the command.
+- **Paging safety.** Next-page links must stay on Graph's origin (scheme, host compared with ASCII-only case folding, and port) and `/v1.0/` path, and a repeated link stops the command.
 - **Read-only.** `list` never writes a report or changes the tenant.
 
 ### delete

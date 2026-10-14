@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"net/url"
 	"os"
@@ -74,7 +73,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 				}
 			}
 			responses := []graphtest.Response{
-				ok(obj{"value": arr{}}),
+				okJSON(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				graphtest.JSON(201, obj{"id": "sp", "appId": "client"}),
@@ -83,12 +82,12 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			case "patch-failure":
 				responses = append(responses, raw(403, "scope-denied"))
 			case "secret-missing-key":
-				responses = append(responses, raw(204, ""), ok(obj{"secretText": "fake-one-time-secret"}))
+				responses = append(responses, raw(204, ""), okJSON(obj{"secretText": "fake-one-time-secret"}))
 			default:
-				responses = append(responses, raw(204, ""), ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}))
+				responses = append(responses, raw(204, ""), okJSON(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}))
 			}
 			f := graphtest.New(t, responses...)
-			err := create(context.Background(), options(t, workflowArgs...), f.Client(t), tio.env)
+			err := create(t.Context(), options(t, workflowArgs...), f.Client(), tio.env)
 
 			requests := f.Requests()
 			if requests[0].Method != "GET" || requests[0].Path != "/v1.0/applications" {
@@ -113,7 +112,7 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 			if got := post["spa"].(obj)["redirectUris"]; !reflect.DeepEqual(got, wantRedirects) {
 				t.Errorf("redirectUris = %v", got)
 			}
-			userRead := obj{"resourceAppId": msGraphAppID, "resourceAccess": arr{obj{"id": userReadScopeID, "type": "Scope"}}}
+			userRead := obj{"resourceAppId": msGraphAppID, "resourceAccess": arr{obj{"id": userReadScopeID.String(), "type": "Scope"}}}
 			if got := post["requiredResourceAccess"]; !reflect.DeepEqual(got, arr{userRead}) {
 				t.Errorf("POST requiredResourceAccess = %v", got)
 			}
@@ -235,8 +234,8 @@ func TestCreateWorkflowsPreserveIDsAndSecretRecovery(t *testing.T) {
 
 func TestCreateWithoutRedirectsSendsEmptyRedirectListAndWarns(t *testing.T) {
 	tio := newTestIO(t, "")
-	f := graphtest.New(t, ok(obj{"value": arr{}}), org, raw(403, "creation-denied"))
-	err := create(context.Background(), options(t, "--name", "App"), f.Client(t), tio.env)
+	f := graphtest.New(t, okJSON(obj{"value": arr{}}), org, raw(403, "creation-denied"))
+	err := create(t.Context(), options(t, "--name", "App"), f.Client(), tio.env)
 	if err == nil || !strings.Contains(err.Error(), "creation-denied") {
 		t.Fatalf("err = %v", err)
 	}
@@ -264,11 +263,11 @@ func TestCreateWithoutRedirectsSendsEmptyRedirectListAndWarns(t *testing.T) {
 func TestCreateServicePrincipalFailureStopsWithRecoveryHint(t *testing.T) {
 	tio := newTestIO(t, "")
 	f := graphtest.New(t,
-		ok(obj{"value": arr{}}),
+		okJSON(obj{"value": arr{}}),
 		org,
 		graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 		raw(400, "sp-replication-lag"))
-	err := create(context.Background(), options(t, workflowArgs...), f.Client(t), tio.env)
+	err := create(t.Context(), options(t, workflowArgs...), f.Client(), tio.env)
 	if err == nil || !strings.Contains(err.Error(), "sp-replication-lag") || isUsage(err) {
 		t.Fatalf("err = %v", err)
 	}
@@ -293,13 +292,13 @@ func TestCreateBlocksDuplicateNamesAndFailedChecks(t *testing.T) {
 		reply     graphtest.Response
 		wantUsage bool
 	}{
-		{"duplicate", ok(obj{"value": arr{obj{"id": "existing"}}}), true},
-		{"missing value", ok(obj{}), false},
+		{"duplicate", okJSON(obj{"value": arr{obj{"id": "existing"}}}), true},
+		{"missing value", okJSON(obj{}), false},
 		{"forbidden", raw(403, "lookup-denied"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := graphtest.New(t, tc.reply)
-			err := create(context.Background(), options(t, "--name", "O'Brien & Co"), f.Client(t), newTestIO(t, "").env)
+			err := create(t.Context(), options(t, "--name", "O'Brien & Co"), f.Client(), newTestIO(t, "").env)
 			if err == nil {
 				t.Fatal("created")
 			}
@@ -324,9 +323,9 @@ func TestCreateBlocksDuplicateNamesAndFailedChecks(t *testing.T) {
 func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
 	t.Run("match on page 2", func(t *testing.T) {
 		f := graphtest.New(t,
-			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
-			ok(obj{"value": arr{obj{"id": "existing"}}}))
-		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
+			okJSON(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
+			okJSON(obj{"value": arr{obj{"id": "existing"}}}))
+		err := create(t.Context(), options(t, "--name", "App"), f.Client(), newTestIO(t, "").env)
 		if !isUsage(err) {
 			t.Fatalf("err = %v, want a usage error", err)
 		}
@@ -338,9 +337,9 @@ func TestCreateNameCheckFollowsPagesAndRejectsCycles(t *testing.T) {
 	})
 	t.Run("page cycle", func(t *testing.T) {
 		f := graphtest.New(t,
-			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
-			ok(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}))
-		err := create(context.Background(), options(t, "--name", "App"), f.Client(t), newTestIO(t, "").env)
+			okJSON(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}),
+			okJSON(obj{"value": arr{}, "@odata.nextLink": "{base}/applications?page=2"}))
+		err := create(t.Context(), options(t, "--name", "App"), f.Client(), newTestIO(t, "").env)
 		if err == nil || !strings.Contains(err.Error(), "repeated next-page link") {
 			t.Fatalf("err = %v", err)
 		}
@@ -357,17 +356,19 @@ func TestAudienceMatchesCaseInsensitivelyAndReturnsCanonicalSpelling(t *testing.
 		{new(" azureadmultipleorgs "), "AzureADMultipleOrgs"},
 		{new("PERSONALMICROSOFTACCOUNT"), "PersonalMicrosoftAccount"},
 	} {
-		got, err := resolveAudience(tc.value)
-		if err != nil || got != tc.want {
-			t.Errorf("resolveAudience(%q) = %q, %v; want %q", deref(tc.value, "<nil>"), got, err, tc.want)
-		}
+		t.Run(deref(tc.value, "<nil>"), func(t *testing.T) {
+			got, err := resolveAudience(tc.value)
+			if err != nil || got != tc.want {
+				t.Errorf("resolveAudience(%q) = %q, %v; want %q", deref(tc.value, "<nil>"), got, err, tc.want)
+			}
+		})
 	}
 }
 
 func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 	tio := newTestIO(t, "")
-	f := graphtest.New(t, ok(obj{"id": "object", "appId": "client"}))
-	if err := create(context.Background(), options(t, "--appid", "existing", "--name", "App"), f.Client(t), tio.env); err != nil {
+	f := graphtest.New(t, okJSON(obj{"id": "object", "appId": "client"}))
+	if err := create(t.Context(), options(t, "--appid", "existing", "--name", "App"), f.Client(), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.Requests()); n != 1 {
@@ -380,8 +381,8 @@ func TestCreateExistingAppIDIsNoopAndTwo404sCreate(t *testing.T) {
 		t.Errorf("stdout = %q", tio.stdout.String())
 	}
 
-	f = graphtest.New(t, raw(404, "missing"), raw(404, "missing"), ok(obj{"value": arr{}}), org, raw(403, "creation-denied"))
-	err := create(context.Background(), options(t, "--appid", "missing", "--name", "App"), f.Client(t), newTestIO(t, "").env)
+	f = graphtest.New(t, raw(404, "missing"), raw(404, "missing"), okJSON(obj{"value": arr{}}), org, raw(403, "creation-denied"))
+	err := create(t.Context(), options(t, "--appid", "missing", "--name", "App"), f.Client(), newTestIO(t, "").env)
 	if err == nil || !strings.Contains(err.Error(), "creation-denied") {
 		t.Fatalf("err = %v", err)
 	}
@@ -408,12 +409,12 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			name: "everything",
 			args: workflowArgs,
 			responses: []graphtest.Response{
-				ok(obj{"value": arr{}}),
+				okJSON(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				sp,
 				raw(204, ""),
-				ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}),
+				okJSON(obj{"keyId": keyID, "secretText": "fake-one-time-secret"}),
 			},
 			wantStdout: "Creating application registration 'App'\n" +
 				"  Supported account types: PersonalMicrosoftAccount\n" +
@@ -457,7 +458,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			name: "minimal",
 			args: []string{"--name", "App"},
 			responses: []graphtest.Response{
-				ok(obj{"value": arr{}}),
+				okJSON(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				sp,
@@ -486,11 +487,11 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 			name: "custom secret dates from Graph",
 			args: []string{"--name", "App", "--create-secret", "--secret-start", "1/3/2028", "--secret-end", "2/3/2028", "--redirect-urls", "http://localhost:5173/"},
 			responses: []graphtest.Response{
-				ok(obj{"value": arr{}}),
+				okJSON(obj{"value": arr{}}),
 				org,
 				graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 				sp,
-				ok(obj{
+				okJSON(obj{
 					"keyId": keyID, "secretText": "fake-one-time-secret",
 					"startDateTime": "2028-03-01T00:00:00Z", "endDateTime": "2028-03-02T23:59:59.5Z",
 				}),
@@ -525,7 +526,7 @@ func TestCreateOutputAndReportAreExact(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tio := newTestIO(t, "")
 			f := graphtest.New(t, tc.responses...)
-			if err := create(context.Background(), options(t, tc.args...), f.Client(t), tio.env); err != nil {
+			if err := create(t.Context(), options(t, tc.args...), f.Client(), tio.env); err != nil {
 				t.Fatal(err)
 			}
 			reportPath := filepath.Join(tio.env.ReportDir, "App.txt")
@@ -566,7 +567,7 @@ func TestCreateValidatesInOrderBeforeAnyRequest(t *testing.T) {
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			f := graphtest.New(t)
-			err := create(context.Background(), options(t, tc.args...), f.Client(t), newTestIO(t, "").env)
+			err := create(t.Context(), options(t, tc.args...), f.Client(), newTestIO(t, "").env)
 			usage, ok := errors.AsType[*cli.UsageError](err)
 			if !ok || usage.Message != tc.want {
 				t.Errorf("err = %v, want usage error %q", err, tc.want)
@@ -579,7 +580,7 @@ func TestCreateValidatesInOrderBeforeAnyRequest(t *testing.T) {
 }
 
 // org is the /organization reply create reads the tenant ID from.
-var org = ok(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
+var org = okJSON(obj{"value": arr{obj{"id": "tenant", "displayName": "Contoso"}}})
 
 func assertOrgRequest(t *testing.T, r graphtest.Request) {
 	t.Helper()
@@ -591,12 +592,12 @@ func assertOrgRequest(t *testing.T, r graphtest.Request) {
 func TestCreateTenantLookupFailureStopsBeforePost(t *testing.T) {
 	for name, reply := range map[string]graphtest.Response{
 		"forbidden": raw(403, "org-denied"),
-		"empty":     ok(obj{"value": arr{}}),
+		"empty":     okJSON(obj{"value": arr{}}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			tio := newTestIO(t, "")
-			f := graphtest.New(t, ok(obj{"value": arr{}}), reply)
-			if err := create(context.Background(), options(t, "--name", "App"), f.Client(t), tio.env); err == nil {
+			f := graphtest.New(t, okJSON(obj{"value": arr{}}), reply)
+			if err := create(t.Context(), options(t, "--name", "App"), f.Client(), tio.env); err == nil {
 				t.Fatal("created")
 			}
 			requests := f.Requests()

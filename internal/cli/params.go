@@ -15,26 +15,33 @@ import (
 // maxParamsFile bounds how much of --params-file is read.
 const maxParamsFile = 1 << 20
 
-// paramsTargets maps each --params-file key that holds text to its option.
-// Keys are the long option names without "--".
-func paramsTargets(o *Options) map[string]**string {
-	return map[string]**string{
-		"appid":                   &o.AppID,
-		"name":                    &o.Name,
-		"audience":                &o.Audience,
-		"scope-name":              &o.ScopeName,
-		"scope-display-name":      &o.ScopeDisplayName,
-		"scope-description":       &o.ScopeDescription,
-		"scope-consent":           &o.ScopeConsent,
-		"scope-user-display-name": &o.ScopeUserDisplayName,
-		"scope-user-description":  &o.ScopeUserDescription,
-		"scope-state":             &o.ScopeState,
-		"secret-expiry":           &o.SecretExpiry,
-		"secret-start":            &o.SecretStart,
-		"secret-end":              &o.SecretEnd,
-		"keyvault-uri":            &o.KeyVaultURI,
-		"keyvault-secret-name":    &o.KeyVaultSecretName,
-		"top":                     &o.Top,
+// textOption binds a long option name (without "--") to the Options field
+// that holds its text value.
+type textOption struct {
+	name   string
+	target **string
+}
+
+// textOptions lists every text option except --params-file. It is the single
+// source for both the command-line flags and the --params-file keys.
+func textOptions(o *Options) []textOption {
+	return []textOption{
+		{"appid", &o.AppID},
+		{"name", &o.Name},
+		{"audience", &o.Audience},
+		{"scope-name", &o.ScopeName},
+		{"scope-display-name", &o.ScopeDisplayName},
+		{"scope-description", &o.ScopeDescription},
+		{"scope-consent", &o.ScopeConsent},
+		{"scope-user-display-name", &o.ScopeUserDisplayName},
+		{"scope-user-description", &o.ScopeUserDescription},
+		{"scope-state", &o.ScopeState},
+		{"top", &o.Top},
+		{"secret-expiry", &o.SecretExpiry},
+		{"secret-start", &o.SecretStart},
+		{"secret-end", &o.SecretEnd},
+		{"keyvault-uri", &o.KeyVaultURI},
+		{"keyvault-secret-name", &o.KeyVaultSecretName},
 	}
 }
 
@@ -47,7 +54,10 @@ func applyParamsFile(o *Options, path string) error {
 	if err != nil {
 		return err
 	}
-	targets := paramsTargets(o)
+	targets := make(map[string]**string)
+	for _, t := range textOptions(o) {
+		targets[t.name] = t.target
+	}
 	for _, key := range slices.Sorted(maps.Keys(params)) {
 		value := params[key]
 		if string(value) == "null" {

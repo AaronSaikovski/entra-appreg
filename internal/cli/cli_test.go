@@ -197,6 +197,16 @@ func TestEarlyExitPrecedenceIgnoresInvalidOptionsAndValues(t *testing.T) {
 	expectErrMessage(t, "No help for 'nope'. Try: help, help create, help expose-api, help list, help delete.", "help", "Nope")
 }
 
+func TestCommandWordsFoldOnlyASCII(t *testing.T) {
+	// strings.ToLower maps U+0130 (dotted capital I) to "i", which would run list.
+	expectErrMessage(t, "Unknown command: l\u0130st. Use 'create', 'expose-api', 'list', 'delete' or 'help' (see --help).", "L\u0130ST", "--help")
+	expectErrMessage(t, "No help for 'l\u0130st'. Try: help, help create, help expose-api, help list, help delete.", "help", "L\u0130ST")
+	// U+212A KELVIN SIGN lowers to "k" under Unicode folding.
+	if got := lowerASCII("\u212AEY-Az"); got != "\u212Aey-az" {
+		t.Fatalf("lowerASCII = %q", got)
+	}
+}
+
 func TestHelpTopicSelection(t *testing.T) {
 	for _, c := range []struct {
 		words []string

@@ -49,7 +49,7 @@ func newTestIO(t *testing.T, stdin string) testIO {
 	}
 }
 
-func ok(v any) graphtest.Response { return graphtest.JSON(200, v) }
+func okJSON(v any) graphtest.Response { return graphtest.JSON(200, v) }
 
 func raw(status int, body string) graphtest.Response {
 	return graphtest.Response{Status: status, Body: body}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -79,7 +80,7 @@ func (f *fixture) newCred(o *azidentity.AzureCLICredentialOptions) (azcore.Token
 
 func authErr(t *testing.T, f *fixture, d time.Duration) string {
 	t.Helper()
-	_, err := authenticateWith(context.Background(), f.lookPath, f.newCred, d)
+	_, err := authenticateWith(t.Context(), f.lookPath, f.newCred, d)
 	if err == nil {
 		t.Fatal("authentication unexpectedly succeeded")
 	}
@@ -88,11 +89,11 @@ func authErr(t *testing.T, f *fixture, d time.Duration) string {
 
 func TestAcquiresTokenForActiveContextAcceptingOpaqueToken(t *testing.T) {
 	f := &fixture{token: opaqueToken}
-	s, err := authenticateWith(context.Background(), f.lookPath, f.newCred, timeout)
+	s, err := authenticateWith(t.Context(), f.lookPath, f.newCred, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tok, _ := s.Credential.GetToken(context.Background(), policy.TokenRequestOptions{})
+	tok, _ := s.Credential.GetToken(t.Context(), policy.TokenRequestOptions{})
 	if tok.Token != opaqueToken {
 		t.Fatalf("got %q", tok.Token)
 	}
@@ -138,36 +139,44 @@ func TestCredentialInitFailureDoesNotDisclose(t *testing.T) {
 }
 
 func TestDeadlineCancelsTokenCollection(t *testing.T) {
-	f := &fixture{blockToken: true}
-	if e := authErr(t, f, 10*time.Millisecond); e != msgTimeout {
-		t.Fatal(e)
-	}
-	if !f.cancelled {
-		t.Fatal("token request was not cancelled")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		f := &fixture{blockToken: true}
+		start := time.Now()
+		if e := authErr(t, f, time.Minute); e != msgTimeout {
+			t.Fatal(e)
+		}
+		if got := time.Since(start); got != time.Minute {
+			t.Fatalf("returned after %v, want %v", got, time.Minute)
+		}
+		if !f.cancelled {
+			t.Fatal("token request was not cancelled")
+		}
+	})
 }
 
 func TestTokenArrivingAfterDeadlineIsDiscarded(t *testing.T) {
-	f := &fixture{token: opaqueToken}
-	slow := func(o *azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error) {
-		time.Sleep(20 * time.Millisecond)
-		return f.newCred(o)
-	}
-	_, err := authenticateWith(context.Background(), f.lookPath, slow, 10*time.Millisecond)
-	if err == nil || err.Error() != msgTimeout {
-		t.Fatalf("err = %v, want %q", err, msgTimeout)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		f := &fixture{token: opaqueToken}
+		slow := func(o *azidentity.AzureCLICredentialOptions) (azcore.TokenCredential, error) {
+			time.Sleep(2 * time.Minute)
+			return f.newCred(o)
+		}
+		_, err := authenticateWith(t.Context(), f.lookPath, slow, time.Minute)
+		if err == nil || err.Error() != msgTimeout {
+			t.Fatalf("err = %v, want %q", err, msgTimeout)
+		}
+	})
 }
 
 func TestStaticCredentialFormattingRedactsToken(t *testing.T) {
 	c := staticCredential{token: azcore.AccessToken{Token: opaqueToken}}
-	s := fmt.Sprintf("%v %+v %#v %s", c, c, c, c)
-	if strings.Contains(s, opaqueToken) {
-		t.Fatal(s)
-	}
 	var tc azcore.TokenCredential = c
-	if s := fmt.Sprintf("%v %+v %#v", tc, tc, tc); strings.Contains(s, opaqueToken) {
-		t.Fatal(s)
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%d", "%t", "%q", "%x"} {
+		for _, v := range []any{c, tc, &c} {
+			if s := fmt.Sprintf(verb, v); s != redactedCredential {
+				t.Errorf("%s of %T = %q", verb, v, s)
+			}
+		}
 	}
 }
 
@@ -175,18 +184,18 @@ func TestStaticCredentialFormattingRedactsToken(t *testing.T) {
 // and its own fixed failure message.
 func TestKeyVaultTokenRequestsVaultScopeWithFixedMessage(t *testing.T) {
 	f := &fixture{token: opaqueToken}
-	cred, err := tokenWith(context.Background(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken)
+	cred, err := tokenWith(t.Context(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tok, _ := cred.GetToken(context.Background(), policy.TokenRequestOptions{}); tok.Token != opaqueToken {
+	if tok, _ := cred.GetToken(t.Context(), policy.TokenRequestOptions{}); tok.Token != opaqueToken {
 		t.Fatalf("got %q", tok.Token)
 	}
 	if got := strings.Join(f.calls, "|"); got != "lookpath az|get-token https://vault.azure.net/.default" {
 		t.Fatalf("calls %v", got)
 	}
 	f = &fixture{tokenErr: errors.New(privateOutput)}
-	if _, err := tokenWith(context.Background(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken); err == nil || err.Error() != msgNoKeyVaultToken {
+	if _, err := tokenWith(t.Context(), f.lookPath, f.newCred, timeout, keyvault.Scope, msgNoKeyVaultToken); err == nil || err.Error() != msgNoKeyVaultToken {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -50,11 +51,11 @@ func vaultEnv(tio *testIO, f *graphtest.Fixture, store SecretStore, openErr erro
 
 func createResponses() []graphtest.Response {
 	return []graphtest.Response{
-		ok(obj{"value": arr{}}),
+		okJSON(obj{"value": arr{}}),
 		org,
 		graphtest.JSON(201, obj{"id": "object", "appId": "client"}),
 		graphtest.JSON(201, obj{"id": "sp", "appId": "client"}),
-		ok(obj{"keyId": keyID, "secretText": "fake-one-time-secret", "endDateTime": "2028-05-28T16:30:45Z"}),
+		okJSON(obj{"keyId": keyID, "secretText": "fake-one-time-secret", "endDateTime": "2028-05-28T16:30:45Z"}),
 	}
 }
 
@@ -63,7 +64,7 @@ func TestCreateStoresSecretInKeyVaultAndReportsIt(t *testing.T) {
 	f := graphtest.New(t, createResponses()...)
 	store := &fakeStore{}
 	uri, requestsAtOpen := vaultEnv(&tio, f, store, nil)
-	if err := create(context.Background(), options(t, vaultArgs...), f.Client(t), tio.env); err != nil {
+	if err := create(t.Context(), options(t, vaultArgs...), f.Client(), tio.env); err != nil {
 		t.Fatal(err)
 	}
 	// The vault is opened (token acquired) after the read-only checks and
@@ -111,7 +112,7 @@ func TestCreateKeyVaultStoreFailureKeepsSecretInReportAndExits1(t *testing.T) {
 	tio := newTestIO(t, "")
 	f := graphtest.New(t, createResponses()...)
 	vaultEnv(&tio, f, &fakeStore{err: errors.New("vault-denied")}, nil)
-	err := create(context.Background(), options(t, vaultArgs...), f.Client(t), tio.env)
+	err := create(t.Context(), options(t, vaultArgs...), f.Client(), tio.env)
 	if err == nil || !strings.Contains(err.Error(), "vault-denied") || isUsage(err) {
 		t.Fatalf("err = %v", err)
 	}
@@ -126,11 +127,27 @@ func TestCreateKeyVaultStoreFailureKeepsSecretInReportAndExits1(t *testing.T) {
 	}
 }
 
+func TestCreateKeyVaultAndReportFailuresAreBothReturned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions cannot block file creation on Windows")
+	}
+	tio := newTestIO(t, "")
+	if !makeUnwritable(t, tio.env.ReportDir) {
+		t.Skip("report directory stays writable (running as root)")
+	}
+	f := graphtest.New(t, createResponses()...)
+	vaultEnv(&tio, f, &fakeStore{err: errors.New("vault-denied")}, nil)
+	err := create(t.Context(), options(t, vaultArgs...), f.Client(), tio.env)
+	if err == nil || isUsage(err) || !strings.Contains(err.Error(), "vault-denied") || !strings.Contains(err.Error(), tio.env.ReportDir) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestCreateKeyVaultTokenFailureStopsBeforePost(t *testing.T) {
 	tio := newTestIO(t, "")
-	f := graphtest.New(t, ok(obj{"value": arr{}}), org)
+	f := graphtest.New(t, okJSON(obj{"value": arr{}}), org)
 	vaultEnv(&tio, f, nil, errors.New("Key Vault authentication failed: no token"))
-	err := create(context.Background(), options(t, vaultArgs...), f.Client(t), tio.env)
+	err := create(t.Context(), options(t, vaultArgs...), f.Client(), tio.env)
 	if err == nil || !strings.Contains(err.Error(), "no token") {
 		t.Fatalf("err = %v", err)
 	}
@@ -164,7 +181,7 @@ func TestCreateKeyVaultOptionsValidateBeforeAnyRequest(t *testing.T) {
 			tio := newTestIO(t, "")
 			f := graphtest.New(t)
 			_, requestsAtOpen := vaultEnv(&tio, f, &fakeStore{}, nil)
-			err := create(context.Background(), options(t, append(base, tc.args...)...), f.Client(t), tio.env)
+			err := create(t.Context(), options(t, append(base, tc.args...)...), f.Client(), tio.env)
 			usage, isUsageErr := errors.AsType[*cli.UsageError](err)
 			if !isUsageErr || usage.Message != tc.want {
 				t.Errorf("err = %v, want usage error %q", err, tc.want)

@@ -1,0 +1,9 @@
+{
+  "name": "tst-web",
+  "audience": "AzureADMyOrg",
+  "redirect-urls": [
+    "https://tst.example.com",
+    "https://www.tst.example.com",
+    "https://tst.example.com/auth/callback"
+  ]
+}
