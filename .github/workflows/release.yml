@@ -53,6 +53,8 @@ jobs:
         with:
           distribution: goreleaser
           version: v2.18.3
-          args: release --clean
+          # One target at a time: each cold build compiles msgraph-sdk-go (several GB of RAM);
+          # four in parallel exhausted the hosted runner's memory and it shut down mid-build.
+          args: release --clean --parallelism 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
